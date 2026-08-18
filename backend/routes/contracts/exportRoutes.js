@@ -83,7 +83,10 @@ module.exports = function (router) {
             if (error.code === 'EXPORT_REQUIRES_DOCX') {
                 return res.status(400).json({ error: '仅 DOCX 合同支持审阅版/最终版导出。', code: error.code });
             }
-            if (error.code === 'LIBREOFFICE_NOT_AVAILABLE' || error.message === 'PDF_CONVERSION_OUTPUT_MISSING') {
+            if (error.code === 'LIBREOFFICE_NOT_AVAILABLE'
+                || error.code?.startsWith('ONLYOFFICE_')
+                || error.message === 'PDF_CONVERSION_OUTPUT_MISSING'
+                || error.message === 'PDF_CONVERSION_OUTPUT_INVALID') {
                 return res.status(503).json({ error: 'PDF 转换服务暂不可用，请先导出 Word 文件。', code: error.code || error.message });
             }
             console.error(`[ERROR] Failed to export contract document ${req.params.id}:`, error);

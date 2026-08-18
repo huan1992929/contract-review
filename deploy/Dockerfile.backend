@@ -4,7 +4,7 @@ ENV NODE_ENV=production \
     PORT=3000
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends fonts-noto-cjk ca-certificates libreoffice-writer \
+    && apt-get install -y --no-install-recommends fonts-noto-cjk ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -11,6 +11,7 @@ const {
     buildContentDisposition,
     createDocumentExport,
     findLibreOfficeBinary,
+    convertDocxToPdfWithOnlyOffice,
 } = require('../services/contractAnalysis/documentExport');
 
 const makeTrackedDocx = (filePath) => {
@@ -74,6 +75,38 @@ test('download filename carries ASCII fallback and UTF-8 filename', () => {
     const header = buildContentDisposition('众安合同-最终版.docx');
     assert.match(header, /filename="contract-final\.docx"/);
     assert.match(header, /filename\*=UTF-8''/);
+});
+
+test('OnlyOffice PDF conversion publishes an unguessable temporary source and cleans it', async (t) => {
+    const axios = require('axios');
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'onlyoffice-export-test-'));
+    const publicDir = path.join(tempDir, 'public-files');
+    const source = path.join(tempDir, 'source.docx');
+    await fs.promises.writeFile(source, 'docx-placeholder');
+    t.after(() => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+    const originalPost = axios.post;
+    const originalGet = axios.get;
+    let sourceUrl;
+    axios.post = async (_url, body) => {
+        sourceUrl = body.url;
+        const publicName = decodeURIComponent(new URL(body.url).pathname.split('/').pop());
+        assert.ok(fs.existsSync(path.join(publicDir, 'export-temp', publicName)));
+        assert.ok(body.token);
+        return { data: { endConvert: true, fileUrl: 'http://onlyoffice/cache/output.pdf' } };
+    };
+    axios.get = async () => ({ data: Buffer.from('%PDF-test') });
+    t.after(() => { axios.post = originalPost; axios.get = originalGet; });
+
+    const output = await convertDocxToPdfWithOnlyOffice(source, tempDir, {
+        onlyOfficeUrl: 'http://onlyoffice',
+        backendUrl: 'http://backend:3000',
+        jwtSecret: 'test-secret',
+        publicFilesDir: publicDir,
+    });
+    assert.equal((await fs.promises.readFile(output)).subarray(0, 4).toString(), '%PDF');
+    assert.match(sourceUrl, /^http:\/\/backend:3000\/files\/export-temp\/[0-9a-f-]+\.docx$/);
+    assert.deepEqual(await fs.promises.readdir(path.join(publicDir, 'export-temp')), []);
 });
 
 test('PDF export converts the selected DOCX variant when LibreOffice is available', { skip: !findLibreOfficeBinary() }, async () => {

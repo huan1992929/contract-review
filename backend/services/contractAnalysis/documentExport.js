@@ -5,9 +5,17 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const AdmZip = require('adm-zip');
+const axios = require('axios');
+const jwt = require('jsonwebtoken');
+const {
+    ONLYOFFICE_JWT_SECRET,
+    ONLYOFFICE_URL,
+    BACKEND_URL_FOR_DOCKER,
+} = require('./onlyoffice');
 
 const execFileAsync = promisify(execFile);
 
@@ -124,6 +132,88 @@ const convertDocxToPdf = async (docxPath, outputDir, options = {}) => {
     }
 };
 
+const convertDocxToPdfWithOnlyOffice = async (docxPath, outputDir, options = {}) => {
+    const onlyOfficeUrl = options.onlyOfficeUrl || ONLYOFFICE_URL;
+    const backendUrl = options.backendUrl || BACKEND_URL_FOR_DOCKER;
+    const jwtSecret = options.jwtSecret || ONLYOFFICE_JWT_SECRET;
+    if (!onlyOfficeUrl || !backendUrl) {
+        const error = new Error('ONLYOFFICE_CONVERSION_NOT_CONFIGURED');
+        error.code = 'ONLYOFFICE_CONVERSION_NOT_CONFIGURED';
+        throw error;
+    }
+
+    const publicFilesDir = options.publicFilesDir
+        || path.join(__dirname, '..', '..', 'public', 'files');
+    const publicTempDir = path.join(publicFilesDir, 'export-temp');
+    const sourceName = `${crypto.randomUUID()}.docx`;
+    const publicSourcePath = path.join(publicTempDir, sourceName);
+    await fs.promises.mkdir(publicTempDir, { recursive: true });
+    await fs.promises.mkdir(outputDir, { recursive: true });
+    await fs.promises.copyFile(docxPath, publicSourcePath);
+
+    try {
+        const payload = {
+            async: false,
+            filetype: 'docx',
+            key: `export-${crypto.randomUUID()}`,
+            outputtype: 'pdf',
+            title: sourceName,
+            url: `${backendUrl.replace(/\/$/, '')}/files/export-temp/${encodeURIComponent(sourceName)}`,
+        };
+        const requestBody = jwtSecret
+            ? { ...payload, token: jwt.sign(payload, jwtSecret) }
+            : payload;
+        const headers = { Accept: 'application/json', 'Content-Type': 'application/json' };
+        if (requestBody.token) headers.Authorization = `Bearer ${requestBody.token}`;
+
+        const conversionResponse = await axios.post(
+            `${onlyOfficeUrl.replace(/\/$/, '')}/converter`,
+            requestBody,
+            { headers, timeout: Number(options.timeoutMs || 90000) },
+        );
+        const result = conversionResponse.data;
+        if (!result?.endConvert || !result?.fileUrl) {
+            const error = new Error('ONLYOFFICE_PDF_CONVERSION_INCOMPLETE');
+            error.code = 'ONLYOFFICE_PDF_CONVERSION_INCOMPLETE';
+            error.details = result;
+            throw error;
+        }
+
+        const downloadResponse = await axios.get(result.fileUrl, {
+            responseType: 'arraybuffer',
+            timeout: Number(options.timeoutMs || 90000),
+        });
+        const pdfBuffer = Buffer.from(downloadResponse.data);
+        if (pdfBuffer.length < 4 || pdfBuffer.subarray(0, 4).toString() !== '%PDF') {
+            const error = new Error('PDF_CONVERSION_OUTPUT_INVALID');
+            error.code = 'PDF_CONVERSION_OUTPUT_INVALID';
+            throw error;
+        }
+        const outputPath = path.join(outputDir, `${path.basename(docxPath, path.extname(docxPath))}.pdf`);
+        await fs.promises.writeFile(outputPath, pdfBuffer);
+        return outputPath;
+    } finally {
+        await fs.promises.rm(publicSourcePath, { force: true });
+    }
+};
+
+const convertDocxToPdfUsingAvailableService = async (docxPath, outputDir, options = {}) => {
+    const shouldUseOnlyOffice = Boolean(
+        (options.onlyOfficeUrl || ONLYOFFICE_URL)
+        && (options.backendUrl || BACKEND_URL_FOR_DOCKER),
+    );
+    if (shouldUseOnlyOffice) {
+        try {
+            return await convertDocxToPdfWithOnlyOffice(docxPath, outputDir, options);
+        } catch (onlyOfficeError) {
+            const binary = options.libreOfficeBinary || findLibreOfficeBinary();
+            if (!binary) throw onlyOfficeError;
+            console.warn('[Export] OnlyOffice PDF conversion failed, falling back to LibreOffice:', onlyOfficeError.message);
+        }
+    }
+    return convertDocxToPdf(docxPath, outputDir, options);
+};
+
 const cleanStem = (filename) => path.basename(String(filename || 'contract'), path.extname(String(filename || '')))
     .replace(/[\u0000-\u001f<>:"/\\|?*]+/g, '_')
     .replace(/[. ]+$/g, '') || 'contract';
@@ -141,7 +231,7 @@ const buildContentDisposition = (filename) => {
     return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
 };
 
-const createDocumentExport = async ({ sourcePath, originalFilename, variant, format, libreOfficeBinary }) => {
+const createDocumentExport = async ({ sourcePath, originalFilename, variant, format, ...conversionOptions }) => {
     if (!EXPORT_VARIANTS.has(variant)) throw Object.assign(new Error('INVALID_EXPORT_VARIANT'), { code: 'INVALID_EXPORT_VARIANT' });
     if (!EXPORT_FORMATS.has(format)) throw Object.assign(new Error('INVALID_EXPORT_FORMAT'), { code: 'INVALID_EXPORT_FORMAT' });
     if (path.extname(sourcePath).toLowerCase() !== '.docx') {
@@ -155,7 +245,7 @@ const createDocumentExport = async ({ sourcePath, originalFilename, variant, for
         else await fs.promises.copyFile(sourcePath, docxPath);
 
         const outputPath = format === 'pdf'
-            ? await convertDocxToPdf(docxPath, tempDir, { libreOfficeBinary })
+            ? await convertDocxToPdfUsingAvailableService(docxPath, tempDir, conversionOptions)
             : docxPath;
         const buffer = await fs.promises.readFile(outputPath);
         return {
@@ -177,6 +267,8 @@ module.exports = {
     acceptAllTrackedChanges,
     findLibreOfficeBinary,
     convertDocxToPdf,
+    convertDocxToPdfWithOnlyOffice,
+    convertDocxToPdfUsingAvailableService,
     buildExportFilename,
     buildContentDisposition,
     createDocumentExport,
