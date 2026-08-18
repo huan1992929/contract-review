@@ -20,6 +20,7 @@ export function useReviewActions(state, editor, helpers) {
     const batchApplying = ref(false);
     const diffItems = ref([]);
     const diffLoading = ref(false);
+    const exportingDocument = ref(false);
 
     const addDocComment = async (text, comment, item = {}) => {
         if (!text) {
@@ -61,10 +62,13 @@ export function useReviewActions(state, editor, helpers) {
         selectedSuggestionPreview.value.status = pendingReview
             ? '已加入审阅修订，可在左侧接受或拒绝'
             : '已直接写入左侧文档';
-        ElMessage.success(pendingReview ? '已加入审阅修订。' : '建议已直接写入合同。');
+        // Keep the primary contract workflow quiet. The persistent inline status
+        // and the green risk marker already confirm success without covering the
+        // editor with a toast after every accepted suggestion.
     };
 
     const adoptSuggestion = async (item, suggestionIndex) => {
+        if (item?._applying || isSuggestionApplied(item)) return;
         const originalText = suggestionOriginal(item);
         const suggestedText = suggestionText(item);
 
@@ -73,9 +77,14 @@ export function useReviewActions(state, editor, helpers) {
             return;
         }
 
-        const markAdopted = (result = {}) => applyResultToSuggestion(item, originalText, suggestedText, result);
+        item._applying = true;
+        const markAdopted = (result = {}) => {
+            applyResultToSuggestion(item, originalText, suggestedText, result);
+            item._applying = false;
+        };
         const markFailed = (status) => {
             selectedSuggestionPreview.value.status = status;
+            item._applying = false;
         };
 
         if (isMissingClauseSuggestion(item)) {
@@ -85,7 +94,14 @@ export function useReviewActions(state, editor, helpers) {
                 suggestedText,
                 markAdopted,
                 markFailed,
-                { mode: reviewApplyMode.value, suggestionIndex },
+                {
+                    mode: reviewApplyMode.value,
+                    suggestionIndex,
+                    anchorHint: item.anchor_hint || item.anchorHint || '',
+                    currentClause: originalText || '',
+                    targetClauseNo: item.target_clause_no || item.targetClauseNo || '',
+                    targetHeading: item.target_heading || item.targetHeading || item.parent_clause || item.target_section || item.section_title || '',
+                },
             );
             return;
         }
@@ -125,10 +141,18 @@ export function useReviewActions(state, editor, helpers) {
             let succeededCount = 0;
             let failedCount = 0;
             let totalReplacements = 0;
+            let latestEditorConfig = null;
+            let latestDocumentKey = contract.editorConfig?.document?.key;
 
-            if (replacementItems.length) {
+            // Serialize the whole batch behind one editor save. Re-saving the
+            // stale browser session after the server has already produced a new
+            // DOCX version can overwrite accepted revisions.
+            if (selectedItems.length) {
                 await forceSaveCurrentDocument(true);
                 await new Promise((resolve) => setTimeout(resolve, 650));
+            }
+
+            if (replacementItems.length) {
                 const suggestions = replacementItems.map(({ item, index }) => ({
                     suggestionIndex: index,
                     title: suggestionTitle(item, 0),
@@ -139,9 +163,10 @@ export function useReviewActions(state, editor, helpers) {
                 const response = await api.batchReplaceContractText(contract.id, {
                     suggestions,
                     mode: reviewApplyMode.value,
-                    expectedDocumentKey: contract.editorConfig?.document?.key,
+                    expectedDocumentKey: latestDocumentKey,
                 });
-                await reloadEditorConfig(response.data.editorConfig);
+                latestEditorConfig = response.data.editorConfig;
+                latestDocumentKey = response.data.editorConfig?.document?.key || latestDocumentKey;
                 totalReplacements += response.data.totalReplacements || 0;
                 succeededCount += response.data.succeededCount || 0;
                 failedCount += response.data.failedCount || 0;
@@ -155,16 +180,19 @@ export function useReviewActions(state, editor, helpers) {
 
             for (const { item, index } of appendItems) {
                 try {
-                    await forceSaveCurrentDocument(true);
-                    await new Promise((resolve) => setTimeout(resolve, 650));
                     const response = await api.appendContractClause(contract.id, {
                         title: suggestionTitle(item, 0),
                         content: suggestionText(item),
                         mode: reviewApplyMode.value,
                         suggestionIndex: index,
-                        expectedDocumentKey: contract.editorConfig?.document?.key,
+                        anchorHint: item.anchor_hint || item.anchorHint || '',
+                        currentClause: suggestionOriginal(item) || '',
+                        targetClauseNo: item.target_clause_no || item.targetClauseNo || '',
+                        targetHeading: item.target_heading || item.targetHeading || item.parent_clause || item.target_section || item.section_title || '',
+                        expectedDocumentKey: latestDocumentKey,
                     });
-                    await reloadEditorConfig(response.data.editorConfig);
+                    latestEditorConfig = response.data.editorConfig || latestEditorConfig;
+                    latestDocumentKey = response.data.editorConfig?.document?.key || latestDocumentKey;
                     applyResultToSuggestion(item, suggestionOriginal(item), suggestionText(item), response.data);
                     succeededCount += 1;
                 } catch {
@@ -177,8 +205,15 @@ export function useReviewActions(state, editor, helpers) {
                 return;
             }
 
-            ElMessage.success(`批量处理完成：成功 ${succeededCount} 项${totalReplacements ? `，替换 ${totalReplacements} 处` : ''}${failedCount ? `，失败 ${failedCount} 项` : ''}。`);
+            selectedSuggestionPreview.value = {
+                before: '批量处理所选修改建议',
+                after: `成功 ${succeededCount} 项${totalReplacements ? `，替换 ${totalReplacements} 处` : ''}${failedCount ? `，失败 ${failedCount} 项` : ''}`,
+                status: reviewApplyMode.value === 'review' ? '已加入审阅修订' : '已直接写入合同',
+            };
             await loadLatestDiff();
+            if (latestEditorConfig) {
+                await reloadEditorConfig(latestEditorConfig);
+            }
         } catch (error) {
             ElMessage.error(error.response?.data?.error || '批量采纳失败。');
         } finally {
@@ -218,9 +253,36 @@ export function useReviewActions(state, editor, helpers) {
         }
     };
 
+    const exportedFilename = (response, fallback) => {
+        const disposition = String(response?.headers?.['content-disposition'] || '');
+        const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+        if (encoded) {
+            try { return decodeURIComponent(encoded); } catch { /* use fallback */ }
+        }
+        const quoted = disposition.match(/filename="([^"]+)"/i)?.[1];
+        return quoted || fallback;
+    };
+
+    const exportContractDocument = async (command = 'review-docx') => {
+        if (exportingDocument.value) return;
+        const [variant, format] = String(command).split('-');
+        if (!['review', 'final'].includes(variant) || !['docx', 'pdf'].includes(format)) return;
+        exportingDocument.value = true;
+        try {
+            const response = await api.exportContractDocument(contract.id, variant, format);
+            const originalName = String(contract.original_filename || '合同').replace(/\.[^.]+$/, '');
+            const variantLabel = variant === 'review' ? '审阅版' : '最终版';
+            downloadBlob(response.data, exportedFilename(response, `${originalName}-${variantLabel}.${format}`));
+        } catch (error) {
+            ElMessage.error(error.response?.data?.error || '导出合同文件失败。');
+        } finally {
+            exportingDocument.value = false;
+        }
+    };
+
     return {
-        selectedSuggestionIndexes, batchApplying, diffItems, diffLoading,
+        selectedSuggestionIndexes, batchApplying, diffItems, diffLoading, exportingDocument,
         addDocComment, adoptSuggestion, isSuggestionApplied, downloadBlob,
-        applySelectedSuggestions, loadLatestDiff, exportReport, downloadPdfAnnotations,
+        applySelectedSuggestions, loadLatestDiff, exportReport, downloadPdfAnnotations, exportContractDocument,
     };
 }

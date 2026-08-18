@@ -6,10 +6,9 @@ const db = require('../../database');
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
-const AdmZip = require('adm-zip');
 const { requireRequestUserId, findOwnedContract } = require('../../services/contractAnalysis/auth');
 const { createContractVersionSnapshot } = require('../../services/contractAnalysis/version');
-const { escapeXmlText, replaceTextInDocx } = require('../../services/contractAnalysis/docxEdit');
+const { replaceTextInDocx, appendClauseInDocx } = require('../../services/contractAnalysis/docxEdit');
 const { buildOnlyOfficeConfig } = require('../../services/contractAnalysis/onlyoffice');
 
 const parseAnalysisResult = (contract) => {
@@ -53,6 +52,7 @@ const docxErrorResponse = (res, error, fallback) => {
         DOCX_EXACT_TEXT_NOT_FOUND: '未能在当前 DOCX 中唯一定位该条款。系统已取消本次修改，文档未发生变化。',
         DOCX_TEXT_MATCH_AMBIGUOUS: '文档中存在多个相同片段，无法安全确定修改位置。请先定位并缩短原文后重试。',
         DOCX_COMPLEX_PARAGRAPH_UNSUPPORTED: '目标条款已包含批注、修订或复杂域，无法安全自动改写，请在左侧文档中人工处理。',
+        DOCX_APPEND_MIXED_SECTIONS: '新增建议同时包含多个不同目录的条款，系统已取消写入。请拆分为独立建议后分别新增。',
         DOCUMENT_VERSION_STALE: '文档已被其他修改更新，请刷新后再采纳该建议。',
     };
     if (messages[error.message]) {
@@ -188,7 +188,13 @@ module.exports = function (router) {
     router.post('/:id/append-clause', async (req, res) => {
         const userId = requireRequestUserId(req, res);
         if (!userId) return;
-        const { title, content, expectedDocumentKey, suggestionIndex } = req.body || {};
+        const body = req.body || {};
+        const {
+            title, content, expectedDocumentKey, suggestionIndex,
+            targetClauseNo, targetHeading,
+        } = body;
+        const anchorHint = body.anchorHint ?? body.anchor_hint;
+        const currentClause = body.currentClause ?? body.current_clause;
         if (!String(content || '').trim()) return res.status(400).json({ error: '追加条款内容不能为空。' });
         const mode = req.body?.mode === 'review' ? 'review' : 'edit';
         let workingPath = '';
@@ -202,36 +208,30 @@ module.exports = function (router) {
 
             workingPath = tempDocxPath(contract.storage_path);
             fs.copyFileSync(contract.storage_path, workingPath);
-            const zip = new AdmZip(workingPath);
-            const entry = zip.getEntry('word/document.xml');
-            if (!entry) throw new Error('DOCX_DOCUMENT_XML_NOT_FOUND');
-            let documentXml = entry.getData().toString('utf8');
-            const normalizedContent = String(content).trim();
-            if (documentXml.includes(escapeXmlText(normalizedContent))) {
+            const appendResult = appendClauseInDocx(workingPath, title, content, {
+                mode,
+                author: 'AI审查',
+                anchorHint,
+                currentClause,
+                targetClauseNo,
+                targetHeading,
+            });
+            if (appendResult.alreadyPresent) {
                 fs.unlinkSync(workingPath);
                 workingPath = '';
-                return res.json({ ok: true, alreadyPresent: true, message: `条款「${title || '未命名条款'}」已存在，未重复追加。`, editorConfig: buildOnlyOfficeConfig(contract, ext, { reviewMode: mode === 'review' }) });
+                const indexes = Number.isInteger(Number(suggestionIndex)) ? [Number(suggestionIndex)] : [];
+                // The exact clause is already part of the source document, so there is no
+                // pending tracked revision even when the user clicked the review action.
+                await updateContractAfterApply(contract, contract.document_key, parseAnalysisResult(contract), indexes, 'edit');
+                return res.json({
+                    ok: true,
+                    alreadyPresent: true,
+                    ...appendResult,
+                    applicationStatus: 'applied',
+                    message: `条款「${title || '未命名条款'}」已存在，未重复追加。`,
+                    editorConfig: buildOnlyOfficeConfig(contract, ext, { reviewMode: mode === 'review' }),
+                });
             }
-
-            let revisionId = Date.now() % 100000000;
-            const wrap = (run) => {
-                if (mode !== 'review') return run;
-                revisionId += 1;
-                return `<w:ins w:id="${revisionId}" w:author="AI审查" w:date="${new Date().toISOString()}">${run}</w:ins>`;
-            };
-            const titlePara = title
-                ? `<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>${wrap(`<w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${escapeXmlText(title)}</w:t></w:r>`)}</w:p>`
-                : '';
-            const contentParas = normalizedContent.split(/\n+/).map((line) =>
-                `<w:p>${wrap(`<w:r><w:t xml:space="preserve">${escapeXmlText(line)}</w:t></w:r>`)}</w:p>`
-            ).join('');
-            const insertXml = `${titlePara}${contentParas}`;
-            const sectionIndex = documentXml.lastIndexOf('<w:sectPr');
-            if (sectionIndex >= 0) documentXml = `${documentXml.slice(0, sectionIndex)}${insertXml}${documentXml.slice(sectionIndex)}`;
-            else if (documentXml.includes('</w:body>')) documentXml = documentXml.replace('</w:body>', `${insertXml}</w:body>`);
-            else throw new Error('DOCX_BODY_NOT_FOUND');
-            zip.updateFile('word/document.xml', Buffer.from(documentXml, 'utf8'));
-            zip.writeZip(workingPath);
 
             const version = await createContractVersionSnapshot(contract, `${mode}-append-clause`);
             fs.renameSync(workingPath, contract.storage_path);
@@ -240,9 +240,11 @@ module.exports = function (router) {
             const indexes = Number.isInteger(Number(suggestionIndex)) ? [Number(suggestionIndex)] : [];
             await updateContractAfterApply(contract, nextKey, parseAnalysisResult(contract), indexes, mode);
             return res.json({
-                ok: true, mode, version,
+                ok: true, mode, version, ...appendResult,
                 applicationStatus: mode === 'review' ? 'pending_review' : 'applied',
-                message: mode === 'review' ? `已将条款「${title || '未命名条款'}」加入审阅修订。` : `已追加条款「${title || '未命名条款'}」到文档末尾。`,
+                message: mode === 'review'
+                    ? `已将条款 ${appendResult.insertedClauseNo} 加入审阅修订。`
+                    : `已将条款 ${appendResult.insertedClauseNo} 写入合同目录。`,
                 editorConfig: buildOnlyOfficeConfig({ ...contract, document_key: nextKey }, ext, { reviewMode: mode === 'review' }),
             });
         } catch (error) {

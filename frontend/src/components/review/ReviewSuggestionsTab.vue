@@ -1,16 +1,20 @@
 <template>
   <div>
-    <div v-if="reviewData.modification_suggestions && reviewData.modification_suggestions.length > 0" class="mb-3 flex items-center justify-between gap-2">
+    <div v-if="suggestions.length" class="mb-3 flex items-center justify-between gap-2">
       <div class="suggestion-indexes" role="group" aria-label="修改建议选择与处理状态">
-        <label
-          v-for="(item, index) in reviewData.modification_suggestions"
+        <button
+          v-for="(item, index) in suggestions"
           :key="'select-ms-' + index"
+          type="button"
           :class="['suggestion-index', suggestionIndexClass(item, index), selectedSuggestionIndexes.includes(index) ? 'is-selected' : '']"
           :title="suggestionIndexLabel(item, index)"
+          :aria-label="suggestionIndexLabel(item, index)"
+          :aria-pressed="selectedSuggestionIndexes.includes(index)"
+          :aria-controls="`suggestion-card-${index}`"
+          @click="activateSuggestion(item, index)"
         >
-          <input v-model="selectedSuggestionIndexes" type="checkbox" :value="index" :aria-label="suggestionIndexLabel(item, index)">
           <span>{{ index + 1 }}</span>
-        </label>
+        </button>
       </div>
       <div class="flex items-center gap-2">
         <span v-if="isPdfContract" class="text-xs text-amber-600">PDF 不支持采纳</span>
@@ -19,24 +23,45 @@
         </button>
       </div>
     </div>
-    <div v-if="reviewData.modification_suggestions && reviewData.modification_suggestions.length > 0" class="space-y-4">
-      <div v-for="(item, index) in reviewData.modification_suggestions" :key="'ms-' + index" class="p-4 bg-bg-subtle rounded-md border border-border-color transition-all hover:shadow-md">
-        <div class="flex justify-between items-start">
-          <p class="font-semibold text-text-dark pr-2">{{ suggestionTitle(item, index) }}</p>
+    <div v-if="suggestions.length" class="space-y-3">
+      <article
+        v-for="(item, index) in suggestions"
+        :id="`suggestion-card-${index}`"
+        :key="'ms-' + index"
+        :class="['suggestion-card', isSuggestionExpanded(index) ? 'is-expanded' : '', isSuggestionResolved(item) ? 'is-resolved' : '']"
+      >
+        <div class="suggestion-card__header">
+          <button
+            type="button"
+            class="suggestion-card__toggle"
+            :aria-expanded="isSuggestionExpanded(index)"
+            :aria-controls="`suggestion-body-${index}`"
+            @click="toggleSuggestion(item, index)"
+          >
+            <span :class="['suggestion-card__number', suggestionIndexClass(item, index)]" aria-hidden="true">{{ index + 1 }}</span>
+            <span class="suggestion-card__heading">
+              <span class="suggestion-card__title">{{ suggestionTitle(item, index) }}</span>
+              <span class="suggestion-card__status">{{ suggestionStatusLabel(item, index) }}</span>
+            </span>
+            <svg :class="['suggestion-card__chevron', isSuggestionExpanded(index) ? 'is-open' : '']" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
           <div class="flex space-x-1 flex-shrink-0">
             <el-tooltip v-if="!isMissingClauseSuggestion(item)" content="在文档中定位" placement="top">
-              <button @click="locateText(suggestionOriginal(item), item)" class="p-1 text-gray-400 hover:text-primary transition-colors">
+              <button type="button" @click="locateText(suggestionOriginal(item), item)" class="p-1 text-gray-400 hover:text-primary transition-colors" :aria-label="`定位第 ${index + 1} 项原文`">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
               </button>
             </el-tooltip>
             <el-tooltip v-if="!isMissingClauseSuggestion(item)" content="添加批注" placement="top">
-              <button @click="addDocComment(suggestionOriginal(item), suggestionReason(item), item)" class="p-1 text-gray-400 hover:text-primary transition-colors">
+              <button type="button" @click="addDocComment(suggestionOriginal(item), suggestionReason(item), item)" class="p-1 text-gray-400 hover:text-primary transition-colors" :aria-label="`为第 ${index + 1} 项添加批注`">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" /></svg>
               </button>
             </el-tooltip>
           </div>
         </div>
 
+        <div v-show="isSuggestionExpanded(index)" :id="`suggestion-body-${index}`" class="suggestion-card__body">
         <div v-if="showPlainLanguage" class="mt-3 p-3 bg-green-50 text-green-800 rounded-md border-l-4 border-green-400">
           <p class="text-xs font-bold mb-1">📢 大白话建议：</p>
           <p class="text-sm">{{ item.plain_language || suggestionReason(item) }}</p>
@@ -94,15 +119,17 @@
           <button @click="previewSuggestion(item)" class="mr-2 px-3 py-1.5 text-xs font-medium text-primary bg-white border border-primary rounded hover:bg-primary-light transition-colors">
             {{ item._showPreview ? '收起变更' : '查看变更' }}
           </button>
-          <button @click="adoptSuggestion(item, index)" :disabled="isPdfContract || isSuggestionApplied(item)" class="px-3 py-1.5 text-xs font-medium text-white bg-primary rounded hover:bg-primary-dark transition-colors flex items-center disabled:opacity-50 disabled:cursor-not-allowed">
+          <button @click="adoptSuggestion(item, index)" :disabled="isPdfContract || isSuggestionResolved(item) || item._applying" class="px-3 py-1.5 text-xs font-medium text-white bg-primary rounded hover:bg-primary-dark transition-colors flex items-center disabled:opacity-50 disabled:cursor-not-allowed">
             <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
-            {{ item.application_status === 'pending_review'
+            {{ item._applying
+              ? '处理中...'
+              : (item.application_status === 'pending_review'
               ? '已加入修订'
               : (item.adopted
                 ? '已采纳'
                 : (isMissingClauseSuggestion(item)
                   ? (reviewApplyMode === 'review' ? '新增修订' : '新增至合同')
-                  : (reviewApplyMode === 'review' ? '加入审阅修订' : '直接编辑'))) }}
+                  : (reviewApplyMode === 'review' ? '加入审阅修订' : '直接编辑')))) }}
           </button>
         </div>
         <div v-if="item._showPreview" class="mt-3 grid grid-cols-1 xl:grid-cols-2 gap-3 text-xs">
@@ -151,14 +178,15 @@
         <div v-else-if="item._showNegotiation && item._negotiationError" class="mt-3 p-3 bg-red-50 border border-red-200 rounded text-xs text-red-700">
           谈判推演失败:{{ item._negotiationError }}
         </div>
-      </div>
+        </div>
+      </article>
     </div>
     <div v-else class="text-center text-text-light py-8">未发现修改建议</div>
   </div>
 </template>
 
 <script>
-import { inject } from 'vue';
+import { computed, inject, nextTick, ref, watch } from 'vue';
 import { ElTooltip } from 'element-plus';
 
 export default {
@@ -176,6 +204,11 @@ export default {
     } = review;
 
     const highRiskPattern = /(违约|解除|终止|付款|结算|价款|总价|金额|争议解决|仲裁|诉讼|保修|工期|安全|保险|单方|责任不对等)/;
+    const suggestions = computed(() => Array.isArray(reviewData.modification_suggestions)
+      ? reviewData.modification_suggestions
+      : []);
+    const expandedSuggestionIndexes = ref([]);
+    const isSuggestionResolved = (item) => isSuggestionApplied(item) || item?.application_status === 'applied';
     const suggestionSeverity = (item, index) => {
       const direct = item?.severity || item?.risk_level;
       if (direct) return normalizeSeverity(direct) === 'high' ? 'high' : 'medium';
@@ -183,24 +216,79 @@ export default {
       return highRiskPattern.test(text) ? 'high' : 'medium';
     };
     const suggestionIndexClass = (item, index) => {
-      if (isSuggestionApplied(item)) return 'suggestion-index--resolved';
+      if (isSuggestionResolved(item)) return 'suggestion-index--resolved';
       return suggestionSeverity(item, index) === 'high'
         ? 'suggestion-index--high'
         : 'suggestion-index--medium';
     };
     const suggestionIndexLabel = (item, index) => {
-      const status = isSuggestionApplied(item)
+      const status = isSuggestionResolved(item)
         ? '已处理'
         : (suggestionSeverity(item, index) === 'high' ? '高风险' : '中风险');
       return `第 ${index + 1} 项，${status}：${suggestionTitle(item, index)}`;
     };
+    const suggestionStatusLabel = (item, index) => {
+      if (isSuggestionResolved(item)) return '已处理';
+      return suggestionSeverity(item, index) === 'high' ? '高风险' : '中风险';
+    };
+    const isSuggestionExpanded = (index) => expandedSuggestionIndexes.value.includes(index);
+    const scrollSuggestionIntoView = async (index) => {
+      await nextTick();
+      document.getElementById(`suggestion-card-${index}`)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      });
+    };
+    const expandAndLocateSuggestion = async (item, index) => {
+      if (!isSuggestionExpanded(index)) {
+        expandedSuggestionIndexes.value = [...expandedSuggestionIndexes.value, index];
+      }
+      await scrollSuggestionIntoView(index);
+      if (isMissingClauseSuggestion(item)) {
+        const suggested = suggestionText(item);
+        const clauseHeading = suggested.match(/(?:^|\n)\s*(第[一二三四五六七八九十百零〇\d]+条[^\n。；]{0,24}|\d+(?:\.\d+)+\s*[^\n。；]{0,24})/)?.[1]?.trim();
+        const anchor = item.anchor_hint
+          || item.anchorHint
+          || item.parent_clause
+          || item.target_section
+          || item.section_title
+          || clauseHeading
+          || suggestionTitle(item, index);
+        if (anchor) await locateText(anchor, { ...item, anchor_hint: anchor });
+      } else {
+        await locateText(suggestionOriginal(item), item);
+      }
+    };
+    const activateSuggestion = async (item, index) => {
+      const selected = new Set(selectedSuggestionIndexes.value);
+      if (selected.has(index)) selected.delete(index);
+      else selected.add(index);
+      selectedSuggestionIndexes.value = [...selected].sort((a, b) => a - b);
+      await expandAndLocateSuggestion(item, index);
+    };
+    const toggleSuggestion = async (item, index) => {
+      if (isSuggestionExpanded(index)) {
+        expandedSuggestionIndexes.value = expandedSuggestionIndexes.value.filter((value) => value !== index);
+        return;
+      }
+      await expandAndLocateSuggestion(item, index);
+    };
+
+    watch(
+      () => suggestions.value.length,
+      (length) => {
+        expandedSuggestionIndexes.value = expandedSuggestionIndexes.value.filter((index) => index < length);
+        selectedSuggestionIndexes.value = selectedSuggestionIndexes.value.filter((index) => index < length);
+      },
+    );
     return {
-      reviewData, showPlainLanguage, reviewApplyMode, isPdfContract,
+      reviewData, suggestions, showPlainLanguage, reviewApplyMode, isPdfContract,
       selectedSuggestionIndexes, batchApplying,
       suggestionTitle, suggestionOriginal, suggestionText, suggestionReason, suggestionCitations, isMissingClauseSuggestion,
       locateText, addDocComment, previewSuggestion, adoptSuggestion,
-      applySelectedSuggestions, isSuggestionApplied, toggleNegotiation, adoptFallbackOption,
-      suggestionIndexClass, suggestionIndexLabel,
+      applySelectedSuggestions, isSuggestionApplied, isSuggestionResolved, toggleNegotiation, adoptFallbackOption,
+      suggestionIndexClass, suggestionIndexLabel, suggestionStatusLabel,
+      isSuggestionExpanded, activateSuggestion, toggleSuggestion,
     };
   },
 };
@@ -227,14 +315,6 @@ export default {
   font-weight: 700;
   line-height: 1;
   transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
-}
-
-.suggestion-index input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
 }
 
 .suggestion-index--high {
@@ -264,9 +344,124 @@ export default {
   box-shadow: 0 0 0 2px rgba(22, 59, 55, 0.17);
 }
 
-.suggestion-index:focus-within {
+.suggestion-index:focus-visible {
   outline: 2px solid #008f87;
   outline-offset: 2px;
+}
+
+.suggestion-card {
+  overflow: hidden;
+  border: 1px solid #dbe5e1;
+  border-radius: 8px;
+  background: #f9fbfa;
+  scroll-margin-top: 12px;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+}
+
+.suggestion-card:hover,
+.suggestion-card.is-expanded {
+  border-color: #b8cec6;
+  box-shadow: 0 7px 22px rgba(22, 59, 55, 0.07);
+}
+
+.suggestion-card.is-resolved {
+  border-color: #b9dbc9;
+  background: #fbfdfc;
+}
+
+.suggestion-card__header {
+  display: flex;
+  align-items: center;
+  min-height: 58px;
+  padding: 9px 12px;
+  gap: 8px;
+}
+
+.suggestion-card__toggle {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 11px;
+  border-radius: 5px;
+  text-align: left;
+}
+
+.suggestion-card__toggle:focus-visible {
+  outline: 2px solid #008f87;
+  outline-offset: 3px;
+}
+
+.suggestion-card__number {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1;
+}
+
+.suggestion-card__heading {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.suggestion-card__title {
+  overflow: hidden;
+  color: #163b37;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.suggestion-card__status {
+  flex: none;
+  color: #72847e;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.suggestion-card__chevron {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  color: #81918c;
+  transition: transform 160ms ease, color 160ms ease;
+}
+
+.suggestion-card__chevron.is-open {
+  color: #008f87;
+  transform: rotate(180deg);
+}
+
+.suggestion-card__body {
+  padding: 0 14px 14px 53px;
+  border-top: 1px solid rgba(219, 229, 225, 0.72);
+}
+
+@media (max-width: 900px) {
+  .suggestion-card__heading {
+    display: block;
+  }
+
+  .suggestion-card__status {
+    display: block;
+    margin-top: 2px;
+  }
+
+  .suggestion-card__body {
+    padding-left: 14px;
+  }
 }
 </style>
 

@@ -365,13 +365,14 @@ export function useReviewEditor(state, helpers) {
                 content,
                 mode: options.mode === 'review' ? 'review' : 'edit',
                 suggestionIndex: options.suggestionIndex,
+                anchorHint: options.anchorHint || '',
+                currentClause: options.currentClause || '',
+                targetClauseNo: options.targetClauseNo || '',
+                targetHeading: options.targetHeading || '',
                 expectedDocumentKey: contract.editorConfig?.document?.key,
             });
             await reloadEditorConfig(response.data?.editorConfig);
             onSuccess?.({ appended: true, ...response.data });
-            if (response.data?.alreadyPresent) {
-                ElMessage.info('该条款已存在于合同中，未重复追加。');
-            }
         } catch (err) {
             const msg = err.response?.data?.error || '新增条款失败。';
             ElMessage.error(msg);

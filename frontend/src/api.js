@@ -87,6 +87,13 @@ export default {
         return apiClient.get(`/contracts/${contractId}/pdf-annotations`, { responseType: 'blob' });
     },
 
+    exportContractDocument(contractId, variant = 'review', format = 'docx') {
+        return apiClient.get(`/contracts/${contractId}/export-document`, {
+            params: { variant, format },
+            responseType: 'blob'
+        });
+    },
+
     createContractGroup(payload) {
         return apiClient.post('/contracts/groups', payload);
     },

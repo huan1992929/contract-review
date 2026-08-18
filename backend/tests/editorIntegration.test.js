@@ -10,6 +10,7 @@ const {
     replaceTextInXmlRuns,
     replaceTextWithRevision,
     resolveParagraphMatch,
+    appendClauseToDocumentXml,
 } = require('../services/contractAnalysis/docxEdit');
 const {
     basisText,
@@ -101,6 +102,168 @@ test('review mode emits real Word insert and delete revisions instead of direct 
     assert.match(revised, /<w:delText>/);
     assert.match(revised, /<w:pPr><w:spacing w:line="360"\/><\/w:pPr>/);
     assert.match(revised, /<w:rPr><w:sz w:val="26"\/><\/w:rPr>/);
+});
+
+const documentWithParagraphs = (...paragraphs) => [
+    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>',
+    ...paragraphs.map((text) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`),
+    '<w:sectPr/></w:body></w:document>',
+].join('');
+
+test('append clause inserts the next subclause inside its existing major section', () => {
+    const xml = documentWithParagraphs(
+        '第九条 争议解决',
+        '9.1 双方应协商解决争议。',
+        '第十条 其他约定',
+        '10.1 本合同一式两份。',
+        '甲方（盖章）：',
+    );
+    const result = appendClauseToDocumentXml(
+        xml,
+        '增加争议解决条款',
+        '9.8 协商不成的，向项目所在地人民法院起诉。',
+        { mode: 'review', author: 'AI审查', date: '2026-08-18T00:00:00.000Z' },
+    );
+
+    assert.equal(result.insertedClauseNo, '9.2');
+    assert.deepEqual(result.placement, {
+        majorSection: 9,
+        subclause: '9.2',
+        strategy: 'content-clause-major',
+    });
+    assert.ok(result.xml.indexOf('9.2 协商不成的') > result.xml.indexOf('9.1 双方应协商'));
+    assert.ok(result.xml.indexOf('9.2 协商不成的') < result.xml.indexOf('第十条 其他约定'));
+    assert.match(result.xml, /<w:ins w:id="1" w:author="AI审查"/);
+    assert.equal(result.xml.includes('增加争议解决条款</w:t>'), false);
+});
+
+test('append clause prioritizes a structural anchor over a conflicting generated clause number', () => {
+    const xml = documentWithParagraphs(
+        '第二条 合同价款与费用',
+        '2.1 合同价款为人民币壹万元。',
+        '第九条 争议解决',
+        '9.1 双方应协商解决争议。',
+        '甲方（盖章）：',
+    );
+    const result = appendClauseToDocumentXml(
+        xml,
+        '增加物业费承担条款',
+        '9.9 物业费由乙方承担。',
+        { currentClause: '2.1 合同价款为人民币壹万元。', mode: 'edit' },
+    );
+
+    assert.equal(result.insertedClauseNo, '2.2');
+    assert.equal(result.placement.strategy, 'structural-hint-major');
+    assert.ok(result.xml.indexOf('2.2 物业费由乙方承担') < result.xml.indexOf('第九条 争议解决'));
+    assert.equal(result.xml.includes('<w:ins'), false);
+});
+
+test('append clause accepts a heading phrase anchor without requiring a numeric hint', () => {
+    const xml = documentWithParagraphs(
+        '第二条 合同价款与费用',
+        '2.1 合同价款为人民币壹万元。',
+        '第九条 争议解决',
+        '9.1 双方应协商解决争议。',
+        '甲方（盖章）：',
+    );
+    const result = appendClauseToDocumentXml(
+        xml,
+        '增加诉讼管辖条款',
+        '协商不成的，向项目所在地人民法院起诉。',
+        { anchorHint: '争议解决', mode: 'review' },
+    );
+
+    assert.equal(result.insertedClauseNo, '9.2');
+    assert.equal(result.placement.strategy, 'anchor-text-major');
+    assert.ok(result.xml.indexOf('9.2 协商不成的') < result.xml.indexOf('甲方（盖章）'));
+});
+
+test('append clause creates one new major section before signatures when no section matches', () => {
+    const xml = documentWithParagraphs(
+        '第五条 其他约定',
+        '5.1 本合同未尽事宜另行协商。',
+        '甲方（盖章）：',
+        '乙方（盖章）：',
+    );
+    const result = appendClauseToDocumentXml(
+        xml,
+        '增加个人信息跨境传输条款',
+        '乙方不得擅自向境外传输个人信息。',
+        { mode: 'review', date: '2026-08-18T00:00:00.000Z' },
+    );
+
+    assert.equal(result.createdMajor, true);
+    assert.equal(result.insertedClauseNo, '6.1');
+    assert.equal(result.placement.strategy, 'new-major-before-signature');
+    assert.ok(result.xml.indexOf('第六条 个人信息跨境传输') < result.xml.indexOf('6.1 乙方不得擅自'));
+    assert.ok(result.xml.indexOf('6.1 乙方不得擅自') < result.xml.indexOf('甲方（盖章）'));
+    assert.equal((result.xml.match(/第六条/g) || []).length, 1);
+    assert.equal((result.xml.match(/增加个人信息跨境传输条款/g) || []).length, 0);
+    assert.equal((result.xml.match(/<w:ins\b/g) || []).length, 2);
+});
+
+test('append clause reports an existing clause without modifying the document', () => {
+    const xml = documentWithParagraphs(
+        '第二条 合同价款与费用',
+        '2.1 物业费由乙方承担。',
+        '甲方（盖章）：',
+    );
+    const result = appendClauseToDocumentXml(xml, '增加物业费条款', '9.9 物业费由乙方承担。', { mode: 'review' });
+    assert.equal(result.alreadyPresent, true);
+    assert.equal(result.xml, xml);
+});
+
+test('append clause strips a generated instruction heading and renumbers sibling subclauses', () => {
+    const xml = documentWithParagraphs(
+        '第九条 争议解决',
+        '9.1 双方应协商解决争议。',
+        '甲方（盖章）：',
+    );
+    const result = appendClauseToDocumentXml(
+        xml,
+        '增加争议解决条款',
+        '增加争议解决条款\n9.7 协商不成的，可以申请调解。\n9.9 调解不成的，向人民法院起诉。',
+        { mode: 'review' },
+    );
+    assert.match(result.xml, />9\.2 协商不成的，可以申请调解。</);
+    assert.match(result.xml, />9\.3 调解不成的，向人民法院起诉。</);
+    assert.equal(result.xml.includes('增加争议解决条款</w:t>'), false);
+});
+
+test('append clause rejects one suggestion that mixes unrelated major sections', () => {
+    const xml = documentWithParagraphs(
+        '第二条 合同价款与费用',
+        '2.1 合同价款为人民币壹万元。',
+        '第九条 争议解决',
+        '9.1 双方应协商解决争议。',
+        '甲方（盖章）：',
+    );
+    assert.throws(() => appendClauseToDocumentXml(
+        xml,
+        '增加补充条款',
+        '2.8 物业费由乙方承担。\n9.8 争议向人民法院起诉。',
+        { mode: 'review' },
+    ), /DOCX_APPEND_MIXED_SECTIONS/);
+});
+
+test('append clause treats a signature table as the hard end of substantive terms', () => {
+    const xml = [
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>',
+        '<w:p><w:r><w:t>第五条 其他约定</w:t></w:r></w:p>',
+        '<w:p><w:r><w:t>5.1 本合同未尽事宜另行协商。</w:t></w:r></w:p>',
+        '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>甲方（盖章）：</w:t></w:r></w:p></w:tc></w:tr></w:tbl>',
+        '<w:p><w:r><w:t>9.1 这是历史版本错误追加到签章后的条款。</w:t></w:r></w:p>',
+        '<w:sectPr/></w:body></w:document>',
+    ].join('');
+    const result = appendClauseToDocumentXml(
+        xml,
+        '增加个人信息跨境传输条款',
+        '乙方不得擅自向境外传输个人信息。',
+        { mode: 'review' },
+    );
+    assert.equal(result.insertedClauseNo, '6.1');
+    assert.ok(result.xml.indexOf('6.1 乙方不得擅自') < result.xml.indexOf('<w:tbl>'));
+    assert.equal(result.xml.includes('第十条'), false);
 });
 
 test('negotiation prompt accepts current_clause and basis array schema', () => {

@@ -11,6 +11,21 @@
           </div>
         </div>
         <div class="flex-shrink-0 flex items-center gap-3">
+          <el-dropdown trigger="click" @command="exportContractDocument">
+            <button class="contract-export-button" :disabled="exportingDocument" aria-label="导出合同文件">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 17v3h14v-3" /></svg>
+              {{ exportingDocument ? '正在导出' : '一键导出' }}
+              <span class="contract-export-caret">⌄</span>
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="review-docx">审阅版 · Word（保留修订）</el-dropdown-item>
+                <el-dropdown-item command="review-pdf">审阅版 · PDF</el-dropdown-item>
+                <el-dropdown-item divided command="final-docx">最终版 · Word（接受全部修订）</el-dropdown-item>
+                <el-dropdown-item command="final-pdf">最终版 · PDF</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           <div class="apply-mode-switch" aria-label="AI 建议采纳方式">
             <button
               @click="reviewApplyMode = 'review'"
@@ -124,7 +139,7 @@
 
 <script>
 import { inject } from 'vue';
-import { ElSwitch, ElTag } from 'element-plus';
+import { ElSwitch, ElTag, ElDropdown, ElDropdownMenu, ElDropdownItem } from 'element-plus';
 import { DocumentEditor } from '@onlyoffice/document-editor-vue';
 import StepHeader from './StepHeader.vue';
 import ZhongAnReviewReport from './ZhongAnReviewReport.vue';
@@ -134,7 +149,7 @@ import ReviewWorkspaceTab from './ReviewWorkspaceTab.vue';
 export default {
   name: 'ReviewStep',
   components: {
-    DocumentEditor, ElSwitch, ElTag, StepHeader,
+    DocumentEditor, ElSwitch, ElTag, ElDropdown, ElDropdownMenu, ElDropdownItem, StepHeader,
     ZhongAnReviewReport, ReviewSuggestionsTab, ReviewWorkspaceTab,
   },
   setup() {
@@ -145,6 +160,7 @@ export default {
       docEditorComponent, selectedSuggestionPreview,
       prepareFocusedReviewFromSelection,
       showPlainLanguage, reviewApplyMode, exportReport, downloadPdfAnnotations,
+      exportContractDocument, exportingDocument,
       cameFromHistory, goBackToUpload, goBackSmart,
       activeAiTab, reviewData, isLawOutdated,
     } = review;
@@ -155,6 +171,7 @@ export default {
       docEditorComponent, selectedSuggestionPreview,
       prepareFocusedReviewFromSelection,
       showPlainLanguage, reviewApplyMode, exportReport, downloadPdfAnnotations,
+      exportContractDocument, exportingDocument,
       cameFromHistory, goBackToUpload, goBackSmart,
       activeAiTab, reviewData, isLawOutdated,
     };
@@ -186,6 +203,48 @@ export default {
 .apply-mode-switch button.is-active {
   color: #fff;
   background: #008f87;
+}
+
+.contract-export-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid #c9a75d;
+  border-radius: 6px;
+  background: #fffdf7;
+  color: #76561d;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.contract-export-button:hover:not(:disabled) {
+  border-color: #ad8030;
+  background: #fff8e8;
+  color: #5f4314;
+}
+
+.contract-export-button:disabled {
+  cursor: wait;
+  opacity: .62;
+}
+
+.contract-export-button svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.contract-export-caret {
+  margin-left: 1px;
+  color: #9b7a3c;
 }
 
 .editor-reload-state {

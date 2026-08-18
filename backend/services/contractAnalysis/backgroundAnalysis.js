@@ -189,6 +189,7 @@ ${relevantKnowledge.map((item, index) => `[${index + 1}] [${item.source_type}] $
 - 仅在检索结果中存在匹配范本或标准条款原文时输出 template_differences；没有范本依据时保持空数组，不得把通用经验冒充范本。
 - compliance_findings 和 modification_suggestions 的 issue_type 只能是“范本差异”“合规瑕疵”“计算错误”“文本错误”之一。
 - modification_suggestions 每一项必须包含 current_clause、basis 和 suggested_text；current_clause 必须尽量逐字摘录合同原文中的完整句子或段落。
+- modification_suggestions 的数量必须由合同实际问题决定：有几项输出几项，不设固定数量，不得为了凑数拆分、重复或补造建议。
 - 合同已有原文需要修改时 operation 必须为 replace；合同缺失条款需要新增时 operation 必须为 append，current_clause 填“合同未约定”，不得把缺失说明伪装成可替换的合同原文。
 - 必须逐条比对「法律与裁判依据」中每一条法律条文与合同对应条款，特别关注天数、期限、比例、金额、次数等强制性数字是否一致；合同条款与知识库依据不一致时，必须列入 compliance_findings 并给出对应的 modification_suggestions，不得遗漏。
 - 如果没有检索依据，不得编造法条或案例，只能说明"当前知识库未检索到直接依据"。
