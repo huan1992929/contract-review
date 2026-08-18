@@ -312,24 +312,14 @@ export function useReviewEditor(state, helpers) {
         hasPendingEditorChanges.value = false;
         stopAutoForceSave();
 
-        const editor = getEditor();
-        try {
-            editor?.destroyEditor?.();
-        } catch (error) {
-            console.warn('[OnlyOffice] destroy current editor failed', error);
-        }
-        try {
-            docEditorComponent.value?.destroyEditor?.();
-        } catch (error) {
-            console.warn('[OnlyOffice] destroy wrapper editor failed', error);
-        }
-
-        // The Vue wrapper keeps a global instance by element id. Give it one
-        // complete unmount tick before creating the editor for the new key.
+        // The official Vue wrapper owns the OnlyOffice instance lifecycle and
+        // destroys the global editor during unmount. Calling destroyEditor here
+        // as well removes Vue's host node before Vue can patch it, which leaves
+        // the review page blank. Unmount once, then create a fresh keyed wrapper.
         contract.editorConfig = null;
-        editorInstanceKey.value += 1;
         await nextTick();
-        await new Promise((resolve) => setTimeout(resolve, 160));
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        editorInstanceKey.value += 1;
         contract.editorConfig = nextConfig;
         await nextTick();
 
