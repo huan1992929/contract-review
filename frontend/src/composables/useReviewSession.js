@@ -76,7 +76,13 @@ export function useReviewSession(state, deps) {
         perspective.value = savedState.perspective;
         Object.assign(preAnalysisData, savedState.preAnalysisData || {});
         selectedTemplateId.value = savedState.selectedTemplateId || preAnalysisData.template_id || '';
-        Object.assign(reviewData, savedState.reviewData || {});
+        // The server is authoritative for applied/pending-review suggestion
+        // states. Keeping the browser's older reviewData after a document write
+        // makes resolved risk boxes revert to red/yellow on reload.
+        Object.assign(reviewData, {
+            ...(savedState.reviewData || {}),
+            ...(response.data.reviewData || {}),
+        });
 
         selectedReviewPoints.value = savedState.selectedReviewPoints || [];
         customPurposes.value = savedState.customPurposes || [{ value: '' }];
