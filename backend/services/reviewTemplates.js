@@ -3,7 +3,7 @@
  * @brief 审查模板管理服务，提供模板加载、匹配与数据库种子能力
  *
  * 核心职责：
- * - 从数据库或 JSON 文件加载审查模板（DB 优先，失败回退 JSON）
+ * - 从数据库或品牌 JSON 文件加载审查模板（DB 优先，失败回退 JSON）
  * - 按关键词命中数与语义相似度加权匹配合同模板
  * - 启动时为空表注入模板并生成 typical_description 与 embedding
  *
@@ -23,10 +23,27 @@ const fs = require('fs');
 const db = require('../database');
 const { embedText } = require('./embeddingClient');
 
-const templatesPath = path.join(__dirname, '..', 'data', 'reviewTemplates.json');
+const TEMPLATE_PROFILES = {
+    default: 'reviewTemplates.json',
+    zhongan: 'zhonganReviewTemplates.json',
+};
+
+// 众安部署默认使用地产专用模板；其他环境可显式设置 REVIEW_TEMPLATE_PROFILE=default。
+const getConfiguredTemplateProfile = () => {
+    const requested = String(process.env.REVIEW_TEMPLATE_PROFILE || 'zhongan').trim().toLowerCase();
+    return TEMPLATE_PROFILES[requested] ? requested : 'default';
+};
+
+const getTemplatesPath = () => path.join(
+    __dirname,
+    '..',
+    'data',
+    TEMPLATE_PROFILES[getConfiguredTemplateProfile()],
+);
 
 // 从 JSON 文件加载模板(数据库不可用时的回退路径)
 const loadTemplatesFromJson = () => {
+    const templatesPath = getTemplatesPath();
     if (!fs.existsSync(templatesPath)) return [];
     return JSON.parse(fs.readFileSync(templatesPath, 'utf8'));
 };
@@ -61,14 +78,14 @@ const rowToTemplate = (row) => {
 // 获取全部模板:优先查数据库,失败回退 JSON 文件
 const getAllTemplates = async () => {
     try {
-        const rows = await db('review_templates').orderBy('created_at', 'asc');
-        if (rows && rows.length > 0) {
-            return rows.map(rowToTemplate);
-        }
+        const rows = await db('review_templates')
+            .where({ is_active: true })
+            .orderBy('created_at', 'asc');
+        return (rows || []).map(rowToTemplate);
     } catch (error) {
         console.warn('[reviewTemplates] DB query failed, falling back to JSON:', error.message);
     }
-    return loadTemplatesFromJson();
+    return loadTemplatesFromJson().filter((template) => template.is_active !== false);
 };
 
 // 按 id 获取模板:优先查数据库,失败回退 JSON
@@ -83,44 +100,102 @@ const getTemplateById = async (id) => {
     return loadTemplatesFromJson().find((template) => template.id === id) || null;
 };
 
-// 启动时调用:若 review_templates 表为空,从 JSON 导入,标记 is_system=true,生成 typical_description 与 embedding
+const buildSeedRow = async (template) => {
+    const typicalDescription = template.typical_description || generateTypicalDescription(template);
+    let embedding = null;
+    try {
+        const vector = await embedText(typicalDescription);
+        embedding = Array.isArray(vector) ? JSON.stringify(vector) : null;
+    } catch (error) {
+        console.warn(`[reviewTemplates] Embedding failed for ${template.id}: ${error.message}`);
+    }
+    return {
+        id: template.id,
+        name: template.name,
+        contract_type_keywords: JSON.stringify(template.contract_type_keywords || []),
+        review_points: JSON.stringify(template.review_points || []),
+        core_purposes: JSON.stringify(template.core_purposes || []),
+        report_sections: JSON.stringify(template.report_sections || []),
+        prompt_rules: JSON.stringify(template.prompt_rules || []),
+        typical_description: typicalDescription,
+        typical_description_embedding: embedding,
+        is_active: template.is_active !== false,
+        is_system: true,
+    };
+};
+
+// 首次启用品牌模板时停用旧系统模板并导入品牌模板。以完整 ID 集为幂等标记，
+// 后续重启不会覆盖管理员在线编辑或启停的结果。
+const activateConfiguredTemplateProfile = async (templates) => {
+    if (getConfiguredTemplateProfile() === 'default' || templates.length === 0) {
+        return { activated: false };
+    }
+    const ids = templates.map((template) => template.id);
+    const existingRows = await db('review_templates').whereIn('id', ids).select('id');
+    if (existingRows.length === ids.length) {
+        return { activated: false, total: ids.length };
+    }
+
+    const seedRows = [];
+    for (const template of templates) {
+        seedRows.push(await buildSeedRow(template));
+    }
+
+    await db.transaction(async (trx) => {
+        await trx('review_templates')
+            .where({ is_system: true })
+            .whereNotIn('id', ids)
+            .update({ is_active: false, updated_at: trx.fn.now() });
+        for (const row of seedRows) {
+            await trx('review_templates')
+                .insert(row)
+                .onConflict('id')
+                .merge({
+                    name: row.name,
+                    contract_type_keywords: row.contract_type_keywords,
+                    review_points: row.review_points,
+                    core_purposes: row.core_purposes,
+                    report_sections: row.report_sections,
+                    prompt_rules: row.prompt_rules,
+                    typical_description: row.typical_description,
+                    typical_description_embedding: row.typical_description_embedding,
+                    is_active: row.is_active,
+                    is_system: true,
+                    updated_at: trx.fn.now(),
+                });
+        }
+    });
+    console.log(`[reviewTemplates] Activated ${getConfiguredTemplateProfile()} profile with ${ids.length} templates.`);
+    return { activated: true, total: ids.length };
+};
+
+// 启动时调用:空表从当前品牌 JSON 导入；已有通用数据时仅首次激活品牌模板。
 const seedTemplatesIfEmpty = async () => {
     try {
+        const templates = loadTemplatesFromJson();
         const countRow = await db('review_templates').count({ count: '*' }).first();
         const count = Number(countRow?.count || 0);
         if (count > 0) {
-            console.log(`[reviewTemplates] Table already has ${count} templates, skipping seed.`);
-            return { seeded: 0, total: count };
+            const activation = await activateConfiguredTemplateProfile(templates);
+            if (!activation.activated) {
+                console.log(`[reviewTemplates] Table already has ${count} templates, skipping seed.`);
+            }
+            const finalCountRow = activation.activated
+                ? await db('review_templates').count({ count: '*' }).first()
+                : countRow;
+            return {
+                seeded: activation.activated ? activation.total : 0,
+                total: Number(finalCountRow?.count || count),
+                profile: getConfiguredTemplateProfile(),
+            };
         }
-        const templates = loadTemplatesFromJson();
         let seeded = 0;
         for (const template of templates) {
-            const typicalDescription = generateTypicalDescription(template);
-            // 为模板描述生成 embedding,存入 typical_description_embedding 字段;失败则为 null,matchTemplate 时相似度降级为 0
-            let embedding = null;
-            try {
-                const vector = await embedText(typicalDescription);
-                embedding = Array.isArray(vector) ? JSON.stringify(vector) : null;
-            } catch (error) {
-                console.warn(`[reviewTemplates] Embedding failed for ${template.id}: ${error.message}`);
-            }
-            await db('review_templates').insert({
-                id: template.id,
-                name: template.name,
-                contract_type_keywords: JSON.stringify(template.contract_type_keywords || []),
-                review_points: JSON.stringify(template.review_points || []),
-                core_purposes: JSON.stringify(template.core_purposes || []),
-                report_sections: JSON.stringify(template.report_sections || []),
-                prompt_rules: JSON.stringify(template.prompt_rules || []),
-                typical_description: typicalDescription,
-                typical_description_embedding: embedding,
-                is_active: true,
-                is_system: true,
-            });
+            await db('review_templates').insert(await buildSeedRow(template));
             seeded += 1;
         }
-        console.log(`[reviewTemplates] Seeded ${seeded} templates from JSON (is_system=true).`);
-        return { seeded, total: seeded };
+        console.log(`[reviewTemplates] Seeded ${seeded} templates from ${getConfiguredTemplateProfile()} profile (is_system=true).`);
+        return { seeded, total: seeded, profile: getConfiguredTemplateProfile() };
     } catch (error) {
         console.error('[reviewTemplates] seedTemplatesIfEmpty failed:', error.message);
         return { seeded: 0, total: 0, error: error.message };
@@ -225,7 +300,7 @@ const matchTemplate = async (contractType = '', text = '') => {
     // 单模板:向后兼容返回对象;得分全为 0 时回退到 general
     const best = scored[0];
     if (best.score <= 0) {
-        return templates.find((t) => t.id === 'general') || templates[0] || null;
+        return templates.find((t) => t.id === 'general' || t.id.endsWith('_general')) || templates[0] || null;
     }
     return best.template;
 };
@@ -236,4 +311,6 @@ module.exports = {
     matchTemplate,
     seedTemplatesIfEmpty,
     generateTypicalDescription,
+    loadTemplatesFromJson,
+    getConfiguredTemplateProfile,
 };

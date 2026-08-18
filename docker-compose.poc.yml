@@ -33,6 +33,7 @@ services:
       VECTOR_SEARCH_CONCURRENCY: "${VECTOR_SEARCH_CONCURRENCY:-10}"
       VECTOR_STORE: postgres
       REVIEW_KB_ONLY_MODE: "true"
+      REVIEW_TEMPLATE_PROFILE: "${REVIEW_TEMPLATE_PROFILE:-zhongan}"
     depends_on:
       postgres:
         condition: service_healthy

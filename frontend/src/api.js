@@ -228,7 +228,7 @@ export default {
     },
 
     getReviewTemplates() {
-        return apiClient.get('/templates');
+        return apiClient.get('/templates', { params: { is_active: true, page: 1, page_size: 100 } });
     }
 };
 
