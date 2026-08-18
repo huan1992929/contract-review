@@ -1,12 +1,12 @@
 // Review.vue OnlyOffice 编辑器操作：搜索/替换/高亮/保存
-import { ref, nextTick } from 'vue';
+import { ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import api from '../api';
 
 export function useReviewEditor(state, helpers) {
     const {
         contract, isEditorReady, selectedSuggestionPreview, docEditorComponent,
-        editorInstanceKey, editorReloading, editorReloadMessage,
+        editorReloading, editorReloadMessage,
     } = state;
     const { suggestionOriginal, suggestionText } = helpers;
 
@@ -14,15 +14,6 @@ export function useReviewEditor(state, helpers) {
     const forceSaveDebounceTimer = ref(null);
     const forceSaveInFlight = ref(false);
     const hasPendingEditorChanges = ref(false);
-
-    const waitForEditorReady = async (timeout = 20000) => {
-        const startedAt = Date.now();
-        while (Date.now() - startedAt < timeout) {
-            if (isEditorReady.value) return true;
-            await new Promise((resolve) => setTimeout(resolve, 200));
-        }
-        return false;
-    };
 
     const getEditor = () => window?.DocEditor?.instances?.docEditorComponent || null;
 
@@ -312,20 +303,12 @@ export function useReviewEditor(state, helpers) {
         hasPendingEditorChanges.value = false;
         stopAutoForceSave();
 
-        // The official Vue wrapper owns the OnlyOffice instance lifecycle and
-        // destroys the global editor during unmount. Calling destroyEditor here
-        // as well removes Vue's host node before Vue can patch it, which leaves
-        // the review page blank. Unmount once, then create a fresh keyed wrapper.
-        contract.editorConfig = null;
-        await nextTick();
-        await new Promise((resolve) => setTimeout(resolve, 250));
-        editorInstanceKey.value += 1;
-        contract.editorConfig = nextConfig;
-        await nextTick();
-
-        const ready = await waitForEditorReady();
-        editorReloading.value = false;
-        if (!ready) throw new Error('EDITOR_RELOAD_TIMEOUT');
+        // The OnlyOffice Vue wrapper replaces its own host element. Dynamically
+        // unmounting or changing its config therefore lets destroyEditor remove
+        // a DOM node that Vue still owns. A normal page reload is the only stable
+        // hand-off to the new document key: the server result is already saved,
+        // and the fresh page rebuilds both Vue and OnlyOffice from clean DOM.
+        window.setTimeout(() => window.location.reload(), 250);
         return true;
     };
 
