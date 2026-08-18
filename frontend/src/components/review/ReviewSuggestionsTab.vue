@@ -1,14 +1,17 @@
 <template>
   <div>
     <div v-if="reviewData.modification_suggestions && reviewData.modification_suggestions.length > 0" class="mb-3 flex items-center justify-between gap-2">
-      <el-checkbox-group v-model="selectedSuggestionIndexes" class="flex flex-wrap gap-2">
-        <el-checkbox
+      <div class="suggestion-indexes" role="group" aria-label="修改建议选择与处理状态">
+        <label
           v-for="(item, index) in reviewData.modification_suggestions"
           :key="'select-ms-' + index"
-          :label="index"
-          border
-        >{{ index + 1 }}</el-checkbox>
-      </el-checkbox-group>
+          :class="['suggestion-index', suggestionIndexClass(item, index), selectedSuggestionIndexes.includes(index) ? 'is-selected' : '']"
+          :title="suggestionIndexLabel(item, index)"
+        >
+          <input v-model="selectedSuggestionIndexes" type="checkbox" :value="index" :aria-label="suggestionIndexLabel(item, index)">
+          <span>{{ index + 1 }}</span>
+        </label>
+      </div>
       <div class="flex items-center gap-2">
         <span v-if="isPdfContract" class="text-xs text-amber-600">PDF 不支持采纳</span>
         <button @click="applySelectedSuggestions" :disabled="batchApplying || isPdfContract || selectedSuggestionIndexes.length === 0" class="px-3 py-1.5 text-xs font-medium text-white bg-primary rounded hover:bg-primary-dark disabled:opacity-50 disabled:cursor-not-allowed">
@@ -156,11 +159,11 @@
 
 <script>
 import { inject } from 'vue';
-import { ElCheckboxGroup, ElCheckbox, ElTooltip } from 'element-plus';
+import { ElTooltip } from 'element-plus';
 
 export default {
   name: 'ReviewSuggestionsTab',
-  components: { ElCheckboxGroup, ElCheckbox, ElTooltip },
+  components: { ElTooltip },
   setup() {
     const review = inject('review');
     const {
@@ -169,17 +172,103 @@ export default {
       suggestionTitle, suggestionOriginal, suggestionText, suggestionReason, suggestionCitations, isMissingClauseSuggestion,
       locateText, addDocComment, previewSuggestion, adoptSuggestion,
       applySelectedSuggestions, isSuggestionApplied, toggleNegotiation, adoptFallbackOption,
+      normalizeSeverity,
     } = review;
+
+    const highRiskPattern = /(违约|解除|终止|付款|结算|价款|总价|金额|争议解决|仲裁|诉讼|保修|工期|安全|保险|单方|责任不对等)/;
+    const suggestionSeverity = (item, index) => {
+      const direct = item?.severity || item?.risk_level;
+      if (direct) return normalizeSeverity(direct) === 'high' ? 'high' : 'medium';
+      const text = [suggestionTitle(item, index), suggestionOriginal(item), suggestionReason(item)].filter(Boolean).join(' ');
+      return highRiskPattern.test(text) ? 'high' : 'medium';
+    };
+    const suggestionIndexClass = (item, index) => {
+      if (isSuggestionApplied(item)) return 'suggestion-index--resolved';
+      return suggestionSeverity(item, index) === 'high'
+        ? 'suggestion-index--high'
+        : 'suggestion-index--medium';
+    };
+    const suggestionIndexLabel = (item, index) => {
+      const status = isSuggestionApplied(item)
+        ? '已处理'
+        : (suggestionSeverity(item, index) === 'high' ? '高风险' : '中风险');
+      return `第 ${index + 1} 项，${status}：${suggestionTitle(item, index)}`;
+    };
     return {
       reviewData, showPlainLanguage, reviewApplyMode, isPdfContract,
       selectedSuggestionIndexes, batchApplying,
       suggestionTitle, suggestionOriginal, suggestionText, suggestionReason, suggestionCitations, isMissingClauseSuggestion,
       locateText, addDocComment, previewSuggestion, adoptSuggestion,
       applySelectedSuggestions, isSuggestionApplied, toggleNegotiation, adoptFallbackOption,
+      suggestionIndexClass, suggestionIndexLabel,
     };
   },
 };
 </script>
+
+<style scoped>
+.suggestion-indexes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.suggestion-index {
+  position: relative;
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+}
+
+.suggestion-index input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.suggestion-index--high {
+  border-color: #ef9a9a;
+  background: #fde8e8;
+  color: #a82b2b;
+}
+
+.suggestion-index--medium {
+  border-color: #e8c36b;
+  background: #fff3cf;
+  color: #8a5b00;
+}
+
+.suggestion-index--resolved {
+  border-color: #78c7a3;
+  background: #e2f5e9;
+  color: #20764b;
+}
+
+.suggestion-index:hover {
+  transform: translateY(-1px);
+}
+
+.suggestion-index.is-selected {
+  border-color: #163b37;
+  box-shadow: 0 0 0 2px rgba(22, 59, 55, 0.17);
+}
+
+.suggestion-index:focus-within {
+  outline: 2px solid #008f87;
+  outline-offset: 2px;
+}
+</style>
 
 <style scoped>
 .adopted-suggestion-text {

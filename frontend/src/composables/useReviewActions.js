@@ -12,6 +12,7 @@ export function useReviewActions(state, editor, helpers) {
         executeEditorMethod, ensureEditorReady, findTextRangeByCandidates,
         buildSuggestionCandidates, buildReplacementCandidates, replaceTextInEditorFinal, previewSuggestion,
         appendClauseInEditorFinal, scheduleForceSave, forceSaveCurrentDocument,
+        reloadEditorConfig,
     } = editor;
     const { suggestionOriginal, suggestionText, suggestionTitle, isMissingClauseSuggestion } = helpers;
 
@@ -140,7 +141,7 @@ export function useReviewActions(state, editor, helpers) {
                     mode: reviewApplyMode.value,
                     expectedDocumentKey: contract.editorConfig?.document?.key,
                 });
-                if (response.data.editorConfig) contract.editorConfig = response.data.editorConfig;
+                await reloadEditorConfig(response.data.editorConfig);
                 totalReplacements += response.data.totalReplacements || 0;
                 succeededCount += response.data.succeededCount || 0;
                 failedCount += response.data.failedCount || 0;
@@ -163,7 +164,7 @@ export function useReviewActions(state, editor, helpers) {
                         suggestionIndex: index,
                         expectedDocumentKey: contract.editorConfig?.document?.key,
                     });
-                    if (response.data.editorConfig) contract.editorConfig = response.data.editorConfig;
+                    await reloadEditorConfig(response.data.editorConfig);
                     applyResultToSuggestion(item, suggestionOriginal(item), suggestionText(item), response.data);
                     succeededCount += 1;
                 } catch {

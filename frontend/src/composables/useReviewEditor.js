@@ -1,16 +1,28 @@
 // Review.vue OnlyOffice 编辑器操作：搜索/替换/高亮/保存
-import { ref } from 'vue';
+import { ref, nextTick } from 'vue';
 import { ElMessage } from 'element-plus';
 import api from '../api';
 
 export function useReviewEditor(state, helpers) {
-    const { contract, isEditorReady, selectedSuggestionPreview, docEditorComponent } = state;
+    const {
+        contract, isEditorReady, selectedSuggestionPreview, docEditorComponent,
+        editorInstanceKey, editorReloading, editorReloadMessage,
+    } = state;
     const { suggestionOriginal, suggestionText } = helpers;
 
     const forceSaveTimer = ref(null);
     const forceSaveDebounceTimer = ref(null);
     const forceSaveInFlight = ref(false);
     const hasPendingEditorChanges = ref(false);
+
+    const waitForEditorReady = async (timeout = 20000) => {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeout) {
+            if (isEditorReady.value) return true;
+            await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+        return false;
+    };
 
     const getEditor = () => window?.DocEditor?.instances?.docEditorComponent || null;
 
@@ -229,7 +241,6 @@ export function useReviewEditor(state, helpers) {
             suggestionIndex: options.suggestionIndex,
             expectedDocumentKey: contract.editorConfig?.document?.key,
         });
-        if (response.data?.editorConfig) contract.editorConfig = response.data.editorConfig;
         return response.data;
     };
 
@@ -293,31 +304,47 @@ export function useReviewEditor(state, helpers) {
         }
     };
 
-    const refreshEditorDocument = async () => {
-        const editor = getEditor();
-        if (!editor) return false;
+    const reloadEditorConfig = async (nextConfig, message = '正在重新载入修订后的合同...') => {
+        if (!nextConfig) return false;
+        editorReloading.value = true;
+        editorReloadMessage.value = message;
+        isEditorReady.value = false;
+        hasPendingEditorChanges.value = false;
+        stopAutoForceSave();
 
+        const editor = getEditor();
         try {
-            const res = await api.getFreshEditorConfig(contract.id);
-            const editorConfig = res.data?.editorConfig;
-            if (editorConfig && typeof editor.refreshFile === 'function') {
-                editor.refreshFile(editorConfig.document || editorConfig);
-                contract.editorConfig = editorConfig;
-                return true;
-            }
-            if (editorConfig && typeof editor.setConfig === 'function') {
-                editor.setConfig(editorConfig);
-                contract.editorConfig = editorConfig;
-                return true;
-            }
-        } catch {
-            // Some OnlyOffice builds do not allow changing config after init.
+            editor?.destroyEditor?.();
+        } catch (error) {
+            console.warn('[OnlyOffice] destroy current editor failed', error);
+        }
+        try {
+            docEditorComponent.value?.destroyEditor?.();
+        } catch (error) {
+            console.warn('[OnlyOffice] destroy wrapper editor failed', error);
         }
 
+        // The Vue wrapper keeps a global instance by element id. Give it one
+        // complete unmount tick before creating the editor for the new key.
+        contract.editorConfig = null;
+        editorInstanceKey.value += 1;
+        await nextTick();
+        await new Promise((resolve) => setTimeout(resolve, 160));
+        contract.editorConfig = nextConfig;
+        await nextTick();
+
+        const ready = await waitForEditorReady();
+        editorReloading.value = false;
+        if (!ready) throw new Error('EDITOR_RELOAD_TIMEOUT');
+        return true;
+    };
+
+    const refreshEditorDocument = async () => {
         try {
-            await executeEditorMethod('ForceSave', []);
-            return true;
-        } catch {
+            const res = await api.getFreshEditorConfig(contract.id);
+            return await reloadEditorConfig(res.data?.editorConfig);
+        } catch (error) {
+            console.warn('[OnlyOffice] refresh editor failed', error);
             return false;
         }
     };
@@ -345,9 +372,12 @@ export function useReviewEditor(state, helpers) {
             await forceSaveCurrentDocument(true);
             await new Promise((resolve) => setTimeout(resolve, 650));
             const result = await replaceTextOnServer(originalText, suggestedText, item, options);
+            await reloadEditorConfig(result.editorConfig);
             onSuccess?.(result);
         } catch (error) {
-            const message = error.response?.data?.error || '替换失败，文档未发生变化。';
+            const message = error.message === 'EDITOR_RELOAD_TIMEOUT'
+                ? '修订已写入，但在线文档重新加载超时，请刷新页面查看。'
+                : (error.response?.data?.error || '替换失败，文档未发生变化。');
             ElMessage.error(message);
             onFailure?.(message);
         }
@@ -364,7 +394,7 @@ export function useReviewEditor(state, helpers) {
                 suggestionIndex: options.suggestionIndex,
                 expectedDocumentKey: contract.editorConfig?.document?.key,
             });
-            if (response.data?.editorConfig) contract.editorConfig = response.data.editorConfig;
+            await reloadEditorConfig(response.data?.editorConfig);
             onSuccess?.({ appended: true, ...response.data });
             if (response.data?.alreadyPresent) {
                 ElMessage.info('该条款已存在于合同中，未重复追加。');
@@ -443,8 +473,18 @@ export function useReviewEditor(state, helpers) {
         console.log("[INFO] OnlyOffice document is ready.");
         setTimeout(() => {
             isEditorReady.value = Boolean(getEditor() || getCommunityEditor());
-            if (isEditorReady.value) startAutoForceSave();
+            if (isEditorReady.value) {
+                editorReloading.value = false;
+                startAutoForceSave();
+            }
         }, 300);
+    };
+
+    const onEditorError = (event) => {
+        editorReloading.value = false;
+        isEditorReady.value = false;
+        console.error('[OnlyOffice] editor error', event?.data || event);
+        ElMessage.error('在线文档加载失败，请刷新后重试。');
     };
 
     return {
@@ -452,9 +492,9 @@ export function useReviewEditor(state, helpers) {
         getEditor, getCommunityEditor, executeEditorMethod, findTextRange, normalizeCandidate,
         splitCandidateSentences, clauseBodyCandidate, buildSuggestionCandidates, buildReplacementCandidates, findTextRangeByCandidates,
         ensureEditorReady, previewSuggestion, locateText, replaceTextOnServer,
-        markAdoptedText, replaceTextInEditor, refreshEditorDocument, serverFallback,
+        markAdoptedText, replaceTextInEditor, reloadEditorConfig, refreshEditorDocument, serverFallback,
         replaceTextInEditorFinal, appendClauseInEditorFinal,
         forceSaveCurrentDocument, scheduleForceSave, stopAutoForceSave, startAutoForceSave,
-        onDocumentStateChange, onDocumentReady,
+        onDocumentStateChange, onDocumentReady, onEditorError,
     };
 }

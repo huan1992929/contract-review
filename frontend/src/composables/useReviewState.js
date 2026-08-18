@@ -12,6 +12,9 @@ export function useReviewState({ isResetting }) {
     const activeAiTab = ref('summary');
     const docEditorComponent = ref(null);
     const isEditorReady = ref(false);
+    const editorInstanceKey = ref(0);
+    const editorReloading = ref(false);
+    const editorReloadMessage = ref('正在重新载入合同文档...');
     const reAnalyzing = ref(false);
     const showPlainLanguage = ref(false);
     const storedApplyMode = localStorage.getItem('contract_apply_mode');
@@ -283,6 +286,9 @@ export function useReviewState({ isResetting }) {
         viewLawDialogVisible.value = false;
         currentLawRef.value = null;
         isEditorReady.value = false;
+        editorInstanceKey.value += 1;
+        editorReloading.value = false;
+        editorReloadMessage.value = '正在重新载入合同文档...';
         Object.assign(preAnalysisData, { contract_type: '', potential_parties: [], suggested_review_points: [], suggested_core_purposes: [], template_id: '', template_name: '' });
         selectedTemplateId.value = 'general';
         selectedReviewPoints.value = [];
@@ -303,7 +309,8 @@ export function useReviewState({ isResetting }) {
 
     return {
         activeStep, cameFromHistory, loading, loadingMessage, sessionLoadFailed,
-        perspective, activeAiTab, docEditorComponent, isEditorReady, reAnalyzing,
+        perspective, activeAiTab, docEditorComponent, isEditorReady,
+        editorInstanceKey, editorReloading, editorReloadMessage, reAnalyzing,
         showPlainLanguage, reviewApplyMode, socket,
         analysisProgress, clauseProgress, analysisPercent, analysisEta, analysisElapsed,
         analysisJobId, analysisSteps, statusPollTimer, elapsedTimer, analysisActive,

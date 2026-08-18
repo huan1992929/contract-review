@@ -30,7 +30,7 @@
       </div>
       <DocumentEditor
         v-if="contract.editorConfig"
-        :key="contract.editorConfig.document?.key || contract.id"
+        :key="`${contract.id}-${editorInstanceKey}`"
         id="docEditorComponent"
         ref="docEditorComponent"
         class="flex-grow min-h-0"
@@ -38,7 +38,12 @@
         :config="contract.editorConfig"
         :events_onDocumentReady="onDocumentReady"
         :events_onDocumentStateChange="onDocumentStateChange"
+        :events_onError="onEditorError"
       />
+      <div v-else-if="editorReloading" class="editor-reload-state flex-grow min-h-0">
+        <span class="editor-reload-spinner" aria-hidden="true"></span>
+        <p>{{ editorReloadMessage }}</p>
+      </div>
       <div v-if="selectedSuggestionPreview" class="border-t border-border-color bg-white p-3 max-h-44 overflow-y-auto">
         <div class="flex items-center justify-between">
           <p class="text-sm font-semibold text-text-dark">最近采纳预览</p>
@@ -135,7 +140,8 @@ export default {
   setup() {
     const review = inject('review');
     const {
-      contract, onlyOfficeUrl, onDocumentReady, onDocumentStateChange,
+      contract, onlyOfficeUrl, onDocumentReady, onDocumentStateChange, onEditorError,
+      editorInstanceKey, editorReloading, editorReloadMessage,
       docEditorComponent, selectedSuggestionPreview,
       prepareFocusedReviewFromSelection,
       showPlainLanguage, reviewApplyMode, exportReport, downloadPdfAnnotations,
@@ -144,7 +150,8 @@ export default {
     } = review;
 
     return {
-      contract, onlyOfficeUrl, onDocumentReady, onDocumentStateChange,
+      contract, onlyOfficeUrl, onDocumentReady, onDocumentStateChange, onEditorError,
+      editorInstanceKey, editorReloading, editorReloadMessage,
       docEditorComponent, selectedSuggestionPreview,
       prepareFocusedReviewFromSelection,
       showPlainLanguage, reviewApplyMode, exportReport, downloadPdfAnnotations,
@@ -179,6 +186,30 @@ export default {
 .apply-mode-switch button.is-active {
   color: #fff;
   background: #008f87;
+}
+
+.editor-reload-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: #f7faf8;
+  color: #687b77;
+  font-size: 13px;
+}
+
+.editor-reload-spinner {
+  width: 26px;
+  height: 26px;
+  border: 3px solid #cfe1dc;
+  border-top-color: #008f87;
+  border-radius: 50%;
+  animation: editor-reload-spin 0.8s linear infinite;
+}
+
+@keyframes editor-reload-spin {
+  to { transform: rotate(360deg); }
 }
 
 @media (max-width: 1280px) {
