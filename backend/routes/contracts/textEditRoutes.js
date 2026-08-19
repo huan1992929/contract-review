@@ -175,12 +175,18 @@ module.exports = function (router) {
 
             workingPath = tempDocxPath(contract.storage_path);
             fs.copyFileSync(contract.storage_path, workingPath);
+            const analysis = parseAnalysisResult(contract);
+            const previousSuggestion = Number.isInteger(Number(suggestionIndex))
+                ? analysis.modification_suggestions?.[Number(suggestionIndex)]
+                : null;
             const stableSuggestionId = suggestionIdentity(contract, suggestionIndex, suggestionId);
             const result = replaceTextInDocx(workingPath, originalText, suggestedText, originalCandidates, {
                 mode,
                 author: 'AI审查',
                 suggestionId: stableSuggestionId,
                 revisionGroupId: `ai-${uuidv4()}`,
+                previousRevisionGroup: previousSuggestion?.revision_group,
+                previousApplicationStatus: previousSuggestion?.application_status,
             });
             const version = await createContractVersionSnapshot(contract, `${mode}-replace-text`);
             fs.renameSync(workingPath, contract.storage_path);
@@ -190,7 +196,7 @@ module.exports = function (router) {
             const indexes = Number.isInteger(Number(suggestionIndex)) ? [Number(suggestionIndex)] : [];
             const revisionGroups = new Map();
             if (indexes.length && result.revisionGroup) revisionGroups.set(indexes[0], result.revisionGroup);
-            await updateContractAfterApply(contract, nextKey, parseAnalysisResult(contract), indexes, mode, revisionGroups);
+            await updateContractAfterApply(contract, nextKey, analysis, indexes, mode, revisionGroups);
             return res.json({
                 ...result,
                 version,
@@ -220,6 +226,7 @@ module.exports = function (router) {
 
             workingPath = tempDocxPath(contract.storage_path);
             fs.copyFileSync(contract.storage_path, workingPath);
+            const analysis = parseAnalysisResult(contract);
             const results = [];
             const appliedIndexes = [];
             let totalReplacements = 0;
@@ -231,6 +238,9 @@ module.exports = function (router) {
                     continue;
                 }
                 try {
+                    const previousSuggestion = Number.isInteger(Number(item.suggestionIndex))
+                        ? analysis.modification_suggestions?.[Number(item.suggestionIndex)]
+                        : null;
                     const stableSuggestionId = suggestionIdentity(contract, item.suggestionIndex, item.suggestionId || item.suggestion_id || item.id);
                     const result = replaceTextInDocx(
                         workingPath, originalText, suggestedText,
@@ -240,6 +250,8 @@ module.exports = function (router) {
                             author: 'AI审查',
                             suggestionId: stableSuggestionId,
                             revisionGroupId: `ai-${uuidv4()}`,
+                            previousRevisionGroup: previousSuggestion?.revision_group,
+                            previousApplicationStatus: previousSuggestion?.application_status,
                         },
                     );
                     totalReplacements += result.replacements;
@@ -268,7 +280,7 @@ module.exports = function (router) {
                     revisionGroups.set(Number(item.suggestionIndex), item.revisionGroup);
                 }
             }
-            await updateContractAfterApply(contract, nextKey, parseAnalysisResult(contract), appliedIndexes, mode, revisionGroups);
+            await updateContractAfterApply(contract, nextKey, analysis, appliedIndexes, mode, revisionGroups);
             return res.json({
                 version, mode,
                 applicationStatus: mode === 'review' ? 'pending_review' : 'applied',

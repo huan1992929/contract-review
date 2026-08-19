@@ -136,6 +136,45 @@ test('clause-numbered prefix anchor replaces the complete clause without duplica
     }
 });
 
+test('reapplying a rejected suggestion removes its stale revision pair before creating a clean replacement', () => {
+    const original = '7.3 本工程整体质量保修期为竣工验收合格之日起 24 个月。防水工程保修期为 5 年，苗木成活养护期按附件三执行。';
+    const staleAnchor = '7.3 本工程整体质量保修期为竣工验收合格之日起 24 个月';
+    const suggestion = '7.3 本工程整体质量保修期为竣工验收合格之日起 24 个月。防水工程保修期为 5 年，苗木成活养护期按附件三执行。本合同附件三与本条不一致的，以本条为准。';
+    const compositeOriginal = `${original} 附件三：一、整体工程保修期为 12 个月。三、防水工程保修期为 2 年。`;
+    const base = `<w:p><w:r><w:t>${original}</w:t></w:r></w:p>`;
+    const stale = replaceTextWithRevisionGroup(base, { start: 0, end: staleAnchor.length }, suggestion, {
+        revisionId: 4,
+        revisionGroupId: 'stale-7.3-group',
+        suggestionId: 'suggestion-7',
+    });
+    assert.equal((stale.xml.match(/<w:del\b/g) || []).length, 1);
+    assert.equal((stale.xml.match(/<w:ins\b/g) || []).length, 1);
+    assert.equal(stale.xml.includes('。防水工程保修期为 5 年，苗木成活养护期按附件三执行。'), true);
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reapply-rejected-'));
+    const filePath = path.join(tempDir, 'contract.docx');
+    try {
+        writeMinimalDocx(filePath, makeDocumentXml(stale.xml));
+        const result = replaceTextInDocx(filePath, compositeOriginal, suggestion, [], {
+            mode: 'review',
+            revisionGroupId: 'fresh-7.3-group',
+            suggestionId: 'suggestion-7',
+            previousRevisionGroup: stale.revisionGroup,
+            previousApplicationStatus: 'rejected',
+        });
+        const xml = new AdmZip(filePath).getEntry('word/document.xml').getData().toString('utf8');
+        assert.equal((xml.match(/<w:del\b/g) || []).length, 1);
+        assert.equal((xml.match(/<w:ins\b/g) || []).length, 1);
+        assert.equal(xml.includes('w:id="4"'), false);
+        assert.equal(xml.includes('w:id="5"'), false);
+        assert.equal(result.revisionGroup.original_text, original);
+        assert.equal(result.revisionGroup.suggested_text, suggestion);
+        assert.equal((paragraphText(xml).match(/7\.3/g) || []).length, 1);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
 test('accepting a replacement revision removes original and revision wrappers', () => {
     const revised = replaceTextWithRevisionGroup(baseParagraph, { start: 4, end: 17 }, '甲方应在60日内完成审核。', {
         revisionId: 30,

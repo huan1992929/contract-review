@@ -686,6 +686,34 @@ const reconcilePartialRevisionGroupInXml = (documentXml, revisionGroup = {}) => 
     return { xml, status: deletionWasRejected ? 'rejected' : 'accepted', changed: true };
 };
 
+/**
+ * A stale ONLYOFFICE save can upload the previous pending revision pair after
+ * the application has already recorded that suggestion as rejected. Before a
+ * rejected suggestion is re-applied, remove only its persisted revision IDs
+ * and restore the original paragraph. Other revisions, comments and fields
+ * remain protected by the normal complex-paragraph guard.
+ */
+const normalizeRejectedRevisionBeforeReapply = (documentXml, revisionGroup = {}, applicationStatus = '') => {
+    if (applicationStatus !== 'rejected' || !revisionGroup?.group_id) {
+        return { xml: documentXml, status: '', changed: false };
+    }
+    const currentStatus = detectRevisionGroupStatusInXml(documentXml, revisionGroup);
+    if (currentStatus === 'rejected') {
+        return { xml: documentXml, status: currentStatus, changed: false };
+    }
+    if (currentStatus === 'pending') {
+        const resolved = resolveRevisionGroupInXml(documentXml, revisionGroup, 'reject');
+        return { xml: resolved.xml, status: resolved.status, changed: resolved.changed };
+    }
+    if (currentStatus === 'partial') {
+        const reconciled = reconcilePartialRevisionGroupInXml(documentXml, revisionGroup);
+        if (reconciled.status === 'rejected') return reconciled;
+    }
+    const error = new Error('REVISION_GROUP_NOT_PENDING');
+    error.currentStatus = currentStatus;
+    throw error;
+};
+
 const resolveRevisionGroupInDocx = (filePath, revisionGroup, resolution) => {
     const zip = new AdmZip(filePath);
     const entry = zip.getEntry('word/document.xml');
@@ -889,7 +917,12 @@ const replaceTextInDocx = (filePath, originalText, suggestedText, originalCandid
     const zip = new AdmZip(filePath);
     const entry = zip.getEntry('word/document.xml');
     if (!entry) throw new Error('DOCX_DOCUMENT_XML_NOT_FOUND');
-    const documentXml = entry.getData().toString('utf8');
+    const priorRevision = normalizeRejectedRevisionBeforeReapply(
+        entry.getData().toString('utf8'),
+        options.previousRevisionGroup,
+        options.previousApplicationStatus,
+    );
+    const documentXml = priorRevision.xml;
     const resolved = resolveParagraphMatch(documentXml, originalText, suggestedText, originalCandidates);
     let paragraphXml;
     let revisionGroup = null;
@@ -941,6 +974,7 @@ module.exports = {
     resolveRevisionGroupInXml,
     resolveRevisionGroupInDocx,
     reconcilePartialRevisionGroupInXml,
+    normalizeRejectedRevisionBeforeReapply,
     syncRevisionGroupsFromDocx,
     normalizeReplacementCandidates,
     resolveParagraphMatch,
