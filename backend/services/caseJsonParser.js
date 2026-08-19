@@ -51,6 +51,48 @@ const buildCaseContent = (document) => {
 };
 
 const parseCaseJsonDocument = (document, { sourceFile = '' } = {}) => {
+    if (document && document.schema === 'official_case_v1') {
+        const title = normalizeText(document.title);
+        const sections = [
+            ['基本案情', document.facts],
+            ['争议焦点', document.issue],
+            ['裁判理由', document.reasoning],
+            ['裁判结果', document.result],
+            ['合同审查启示', document.review_guidance],
+        ];
+        const content = sections
+            .map(([label, value]) => normalizeText(value) ? `${label}: ${normalizeText(value)}` : '')
+            .filter(Boolean)
+            .join('\n\n');
+        if (!title || !content || !document.official_url) return null;
+        const stableSourceId = document.source_id || `official-case:${stableId([document.official_url, document.case_no, title])}`;
+        return {
+            source_type: 'case',
+            source_id: stableSourceId,
+            title,
+            category: normalizeText(document.category) || '合同纠纷',
+            clause_id: normalizeText(document.case_no || document.publication_form),
+            source_name: normalizeText(document.official_source) || '最高人民法院',
+            source_url: document.official_url,
+            content,
+            law_status: '现行参考',
+            metadata: {
+                schema: 'official_case_v1',
+                court: document.court || '最高人民法院',
+                case_no: document.case_no || null,
+                publication_form: document.publication_form || '',
+                published_at: document.published_at || '',
+                verified_at: document.verified_at || '',
+                jurisdiction: document.jurisdiction || 'CN',
+                applicable_contract_types: document.applicable_contract_types || [],
+                official_source: document.official_source || '最高人民法院',
+                official_url: document.official_url,
+                approval_status: 'official_verified',
+                parser: 'official-case-v1',
+                source_file: sourceFile,
+            },
+        };
+    }
     const fallbackTitle = sourceFile
         ? path.basename(sourceFile, path.extname(sourceFile))
         : `case-${document.pid || stableId([document.qw, document.fact])}`;

@@ -12,8 +12,13 @@ export function useReviewState({ isResetting }) {
     const activeAiTab = ref('summary');
     const docEditorComponent = ref(null);
     const isEditorReady = ref(false);
+    const editorInstanceKey = ref(0);
+    const editorReloading = ref(false);
+    const editorReloadMessage = ref('正在重新载入合同文档...');
     const reAnalyzing = ref(false);
     const showPlainLanguage = ref(false);
+    const storedApplyMode = localStorage.getItem('contract_apply_mode');
+    const reviewApplyMode = ref(storedApplyMode === 'edit' ? 'edit' : 'review');
     const socket = ref(null);
 
     const analysisProgress = ref([]);
@@ -83,7 +88,7 @@ export function useReviewState({ isResetting }) {
         standard_comparison: [],
     });
 
-    const onlyOfficeUrl = import.meta.env.VITE_APP_ONLYOFFICE_URL;
+    const onlyOfficeUrl = import.meta.env.VITE_APP_ONLYOFFICE_URL || '/onlyoffice/';
 
     // --- Constants ---
     const progressStepLabels = {
@@ -245,6 +250,7 @@ export function useReviewState({ isResetting }) {
             allPotentialParties: allPotentialParties.value,
             allSuggestedCorePurposes: allSuggestedCorePurposes.value,
             selectedTemplateId: selectedTemplateId.value,
+            reviewApplyMode: reviewApplyMode.value,
         };
         if (stateToSave.contract && stateToSave.contract.id) {
             localStorage.setItem('review_session', JSON.stringify(stateToSave));
@@ -280,6 +286,9 @@ export function useReviewState({ isResetting }) {
         viewLawDialogVisible.value = false;
         currentLawRef.value = null;
         isEditorReady.value = false;
+        editorInstanceKey.value += 1;
+        editorReloading.value = false;
+        editorReloadMessage.value = '正在重新载入合同文档...';
         Object.assign(preAnalysisData, { contract_type: '', potential_parties: [], suggested_review_points: [], suggested_core_purposes: [], template_id: '', template_name: '' });
         selectedTemplateId.value = 'general';
         selectedReviewPoints.value = [];
@@ -300,8 +309,9 @@ export function useReviewState({ isResetting }) {
 
     return {
         activeStep, cameFromHistory, loading, loadingMessage, sessionLoadFailed,
-        perspective, activeAiTab, docEditorComponent, isEditorReady, reAnalyzing,
-        showPlainLanguage, socket,
+        perspective, activeAiTab, docEditorComponent, isEditorReady,
+        editorInstanceKey, editorReloading, editorReloadMessage, reAnalyzing,
+        showPlainLanguage, reviewApplyMode, socket,
         analysisProgress, clauseProgress, analysisPercent, analysisEta, analysisElapsed,
         analysisJobId, analysisSteps, statusPollTimer, elapsedTimer, analysisActive,
         selectedSuggestionPreview, adoptedHighlights,

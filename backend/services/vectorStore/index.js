@@ -21,6 +21,7 @@ const path = require('path');
 const fs = require('fs');
 const db = require('../../database');
 const { EMBEDDING_DIM, embedText, ensureEmbeddingReady, rerankDocuments } = require('../embeddingClient');
+const { createSemaphore } = require('../../utils/semaphore');
 const { parseLegalMarkdownFile } = require('../legalMarkdownParser');
 const { parseCaseJsonDocument } = require('../caseJsonParser');
 
@@ -191,7 +192,7 @@ const seedCasesFromJson = async (onProgress, { skipMilvus = false } = {}) => {
 
     const files = listCaseJsonFiles();
     if (files.length === 0) {
-        console.warn(`[DB Init] No case JSON files found under ${process.env.CASE_SEED_DIR || 'candidate_55192'}.`);
+        console.warn(`[DB Init] No case JSON files found under ${process.env.CASE_SEED_DIR || 'official_contract_cases'}.`);
         return { imported: 0, chunks: 0, files: 0 };
     }
 
@@ -273,6 +274,43 @@ const deleteKnowledgeDocuments = async ({ ids = [], sourceIds = [], sourceType =
     return { deleted: rows.length, vectorStore: state.milvusReady ? 'milvus' : 'relational-fallback' };
 };
 
+// 可恢复隔离知识条目：从 Milvus 正式召回集合删除，但在 PostgreSQL 中保留原文、
+// 向量和隔离原因。用于处置历史误入库案例，避免不可逆物理删除。
+const quarantineKnowledgeDocuments = async ({ sourceType = '', sourceNameIncludes = '', reason = '', operator = 'system' } = {}) => {
+    await ensureVectorStore();
+    if (!sourceType && !sourceNameIncludes) {
+        throw new Error('At least one quarantine filter is required.');
+    }
+    let query = db('vector_documents');
+    if (sourceType) query = query.where('source_type', sourceType);
+    if (sourceNameIncludes) query = query.where('source_name', 'like', `%${sourceNameIncludes}%`);
+    const rows = await query.select('*');
+    if (rows.length === 0) return { quarantined: 0 };
+
+    await deleteMilvusRows(rows);
+    await db.transaction(async (trx) => {
+        for (const row of rows) {
+            let metadata = {};
+            try { metadata = JSON.parse(row.metadata || '{}'); } catch { metadata = {}; }
+            await trx('vector_documents').where({ id: row.id }).update({
+                source_type: `quarantined_${row.source_type}`,
+                law_status: '已隔离',
+                metadata: JSON.stringify({
+                    ...metadata,
+                    quarantine: {
+                        original_source_type: row.source_type,
+                        reason: reason || '与合同审查业务无关',
+                        operator,
+                        quarantined_at: new Date().toISOString(),
+                    },
+                }),
+                updated_at: trx.fn.now(),
+            });
+        }
+    });
+    return { quarantined: rows.length };
+};
+
 // 清空所有向量数据（用于重建），同时清空 SQLite 和 Milvus
 const clearAllVectorDocuments = async () => {
     await ensureVectorStore();
@@ -321,7 +359,11 @@ const syncAllVectorDocuments = async (onProgress) => {
     return { synced, total, vectorStore: state.milvusReady ? 'milvus' : 'relational-fallback' };
 };
 
-const searchVectorDocuments = async (query, { limit = 5, sourceTypes = [], rerank = true, includeHistorical = false } = {}) => {
+// 所有请求共享同一并发阈值，避免多通道检索或多人同时审查耗尽 Knex 连接池。
+// 默认 4，小于生产默认连接池 10，给状态写入、知识库管理和其他接口预留连接。
+const vectorSearchSemaphore = createSemaphore(process.env.VECTOR_SEARCH_CONCURRENCY || 4);
+
+const searchVectorDocumentsUnbounded = async (query, { limit = 5, sourceTypes = [], rerank = true, includeHistorical = false } = {}) => {
     await ensureVectorStore();
     const cleanQuery = normalizeText(query);
     const queryVector = await embedText(cleanQuery);
@@ -341,6 +383,10 @@ const searchVectorDocuments = async (query, { limit = 5, sourceTypes = [], reran
     const reranked = rerank ? await rerankDocuments(cleanQuery, results, limit) : results.slice(0, limit);
     return reranked.slice(0, limit);
 };
+
+const searchVectorDocuments = (query, options = {}) => (
+    vectorSearchSemaphore.run(() => searchVectorDocumentsUnbounded(query, options))
+);
 
 // 知识库检索 rerank 阈值：只对 rerank_score 生效；rerank 不可用时（无 rerank_score）不过滤
 // 设为 0 可关闭阈值过滤；未配置环境变量时默认 0.6
@@ -463,6 +509,7 @@ module.exports = {
     listKnowledgeDocuments,
     importKnowledgeEntries,
     deleteKnowledgeDocuments,
+    quarantineKnowledgeDocuments,
     clearAllVectorDocuments,
     syncAllVectorDocuments,
     splitTextIntoChunks,

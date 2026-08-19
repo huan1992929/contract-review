@@ -1,23 +1,301 @@
 // Review.vue OnlyOffice 编辑器操作：搜索/替换/高亮/保存
-import { ref } from 'vue';
+import { nextTick, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import api from '../api';
 
 export function useReviewEditor(state, helpers) {
-    const { contract, isEditorReady, selectedSuggestionPreview, docEditorComponent } = state;
+    const {
+        contract, isEditorReady, selectedSuggestionPreview, docEditorComponent,
+        editorReloading, editorReloadMessage, reviewApplyMode,
+    } = state;
     const { suggestionOriginal, suggestionText } = helpers;
 
     const forceSaveTimer = ref(null);
     const forceSaveDebounceTimer = ref(null);
     const forceSaveInFlight = ref(false);
     const hasPendingEditorChanges = ref(false);
+    const editorModeSyncing = ref(false);
+    const editorTrackRevisionsActive = ref(null);
+    const editorModeSyncError = ref('');
+    let editorReloadWaiter = null;
+    let documentMutationQueue = Promise.resolve();
+    let editorModeSyncQueue = Promise.resolve();
+    let trackRevisionsCallbackEditor = null;
 
     const getEditor = () => window?.DocEditor?.instances?.docEditorComponent || null;
+
+    // ONLYOFFICE Community does not expose the paid Automation API connector on
+    // the host DocEditor instance. The editor is proxied on the same origin in
+    // this POC, so the document frame's plugin-compatible methods are available
+    // as a fallback for search, comments, selected text and format-safe replace.
+    const getCommunityEditor = () => {
+        try {
+            const frameWindow = document.querySelector('iframe[name="frameEditor"]')?.contentWindow;
+            return frameWindow?.editor || frameWindow?.Asc?.editor || null;
+        } catch {
+            return null;
+        }
+    };
+
+    const getEditorFrameWindow = () => {
+        try {
+            return document.querySelector('iframe[name="frameEditor"]')?.contentWindow || null;
+        } catch {
+            return null;
+        }
+    };
+
+    // The DocsAPI host wrapper does not expose the current Track Changes flag.
+    // The same-origin Community editor does expose the documented SDKJS review
+    // methods; read the effective flag after every write so the page switch can
+    // never claim "审阅修订" while the editor is actually performing direct edits.
+    const readEditorTrackRevisions = () => {
+        const editor = getCommunityEditor();
+        if (!editor) return null;
+        if (typeof editor.asc_IsTrackRevisions === 'function') {
+            return Boolean(editor.asc_IsTrackRevisions());
+        }
+        const logicDocument = editor.WordControl?.m_oLogicDocument;
+        if (typeof logicDocument?.IsTrackRevisions === 'function') {
+            return Boolean(logicDocument.IsTrackRevisions());
+        }
+        return null;
+    };
+
+    const reflectEditorTrackRevisions = (actual) => {
+        if (typeof actual !== 'boolean') return;
+        editorTrackRevisionsActive.value = actual;
+        if (!editorModeSyncing.value) {
+            reviewApplyMode.value = actual ? 'review' : 'edit';
+        }
+    };
+
+    const writeEditorTrackRevisions = (enabled) => {
+        const editor = getCommunityEditor();
+        if (!editor) throw new Error('EDITOR_NOT_READY');
+        let handled = false;
+
+        // Keep both the document-wide and this session's local flag aligned.
+        // This matters for files that already contain w:trackRevisions: merely
+        // switching the local flag off would still leave direct edit disabled.
+        if (typeof editor.asc_SetGlobalTrackRevisions === 'function') {
+            editor.asc_SetGlobalTrackRevisions(Boolean(enabled));
+            handled = true;
+        }
+        if (typeof editor.asc_SetLocalTrackRevisions === 'function') {
+            editor.asc_SetLocalTrackRevisions(Boolean(enabled));
+            handled = true;
+        } else if (typeof editor.asc_SetTrackRevisions === 'function') {
+            editor.asc_SetTrackRevisions(Boolean(enabled));
+            handled = true;
+        }
+
+        if (!handled) {
+            const frameWindow = getEditorFrameWindow();
+            const notificationCenter = frameWindow?.Common?.NotificationCenter;
+            if (typeof notificationCenter?.trigger === 'function') {
+                notificationCenter.trigger('reviewchanges:turn', enabled ? 'on' : 'off');
+                handled = true;
+            }
+        }
+        if (!handled) throw new Error('EDITOR_TRACK_REVISIONS_UNAVAILABLE');
+    };
+
+    const syncEditorTrackRevisions = (mode = reviewApplyMode.value, options = {}) => {
+        const desiredMode = mode === 'edit' ? 'edit' : 'review';
+        const desired = desiredMode === 'review';
+        const run = editorModeSyncQueue.then(async () => {
+            editorModeSyncing.value = true;
+            editorModeSyncError.value = '';
+            try {
+                if (!getCommunityEditor()) throw new Error('EDITOR_NOT_READY');
+                writeEditorTrackRevisions(desired);
+                await new Promise((resolve) => setTimeout(resolve, 120));
+                const actual = readEditorTrackRevisions();
+                editorTrackRevisionsActive.value = actual;
+                if (actual !== desired) {
+                    const error = new Error('EDITOR_TRACK_REVISIONS_MISMATCH');
+                    error.desiredMode = desiredMode;
+                    error.actualMode = actual === true ? 'review' : (actual === false ? 'edit' : 'unknown');
+                    throw error;
+                }
+                reviewApplyMode.value = desiredMode;
+                return true;
+            } catch (error) {
+                const actual = readEditorTrackRevisions();
+                // A failed verification must never leave the page switch
+                // claiming a mode different from the editor's effective mode.
+                if (typeof actual === 'boolean') {
+                    editorTrackRevisionsActive.value = actual;
+                    reviewApplyMode.value = actual ? 'review' : 'edit';
+                }
+                editorModeSyncError.value = error.message;
+                if (options.notify !== false) {
+                    ElMessage.error('未能同步在线文档的修订模式，请等待文档加载完成后重试。');
+                }
+                throw error;
+            } finally {
+                editorModeSyncing.value = false;
+            }
+        });
+        editorModeSyncQueue = run.catch(() => undefined);
+        return run;
+    };
+
+    const ensureReviewApplyMode = async (options = {}) => {
+        try {
+            await syncEditorTrackRevisions(reviewApplyMode.value, options);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+
+    const setReviewApplyMode = async (mode) => {
+        if (!['review', 'edit'].includes(mode) || editorModeSyncing.value) return false;
+        if (!isEditorReady.value) {
+            ElMessage.error('在线文档尚未加载完成，暂时无法切换修订模式。');
+            return false;
+        }
+        try {
+            return await syncEditorTrackRevisions(mode);
+        } catch {
+            return false;
+        }
+    };
+
+    const bindTrackRevisionsState = () => {
+        const editor = getCommunityEditor();
+        if (!editor || trackRevisionsCallbackEditor === editor) return;
+        trackRevisionsCallbackEditor = editor;
+        if (typeof editor.asc_registerCallback === 'function') {
+            editor.asc_registerCallback('asc_onOnTrackRevisionsChange', (localFlag, globalFlag) => {
+                const actual = Boolean(localFlag || globalFlag);
+                reflectEditorTrackRevisions(actual);
+            });
+        }
+        reflectEditorTrackRevisions(readEditorTrackRevisions());
+    };
+
+    const executeCommunityEditorMethod = (method, args = []) => {
+        const editor = getCommunityEditor();
+        if (!editor) throw new Error('EDITOR_NOT_READY');
+
+        if (method === 'Search' && typeof editor.pluginMethod_SearchNext === 'function') {
+            const text = String(args[0] || '').trim();
+            if (!text) return [];
+            const found = editor.pluginMethod_SearchNext({ searchString: text, matchCase: false }, true);
+            return found ? [{ __communitySelection: true, text }] : [];
+        }
+
+        if (method === 'SelectRange' && args[0]?.__communitySelection) {
+            // SearchNext already selects and scrolls the matching text.
+            return true;
+        }
+
+        if (method === 'GetSelectedText' && typeof editor.pluginMethod_GetSelectedText === 'function') {
+            return editor.pluginMethod_GetSelectedText({ Numbering: true, ParaSeparator: '\n' });
+        }
+
+        if (method === 'AddComment' && typeof editor.pluginMethod_AddComment === 'function') {
+            const commentText = String(args[0] || 'AI 审查建议');
+            const author = String(args[1] || 'AI 审查专家');
+            return editor.pluginMethod_AddComment({
+                Text: commentText,
+                UserName: author,
+                Time: String(Date.now()),
+                Solved: false,
+            });
+        }
+
+        if ((method === 'PasteText' || method === 'ReplaceText')
+            && typeof editor.pluginMethod_ReplaceTextSmart === 'function') {
+            const replacement = String(method === 'ReplaceText' ? args[1] : args[0] || '');
+            const result = editor.pluginMethod_ReplaceTextSmart(
+                replacement.split(/\r?\n/),
+                '\t',
+                '\r\n',
+            );
+            if (result === false) throw new Error('EDITOR_SMART_REPLACE_FAILED');
+            return new Promise((resolve) => setTimeout(() => resolve(result), 450));
+        }
+
+        throw new Error(`EDITOR_METHOD_UNAVAILABLE:${method}`);
+    };
+
+    // SearchNext only guarantees that a match is visible. In long documents it
+    // commonly leaves the selected clause at the bottom edge, which makes the
+    // risk card/document relationship hard to inspect. Locate the Community
+    // editor's scroll controller dynamically (the property name on the editor
+    // object is minified and can change between OnlyOffice builds) and move the
+    // active caret to the vertical center of the document viewport.
+    const centerCommunityEditorSelection = async () => {
+        const frameWindow = getEditorFrameWindow();
+        const editor = getCommunityEditor();
+        if (!frameWindow || !editor) return false;
+        await new Promise((resolve) => setTimeout(resolve, 120));
+
+        const cursor = frameWindow.document.getElementById('id_target_cursor');
+        const viewer = frameWindow.document.getElementById('id_viewer');
+        if (!cursor || !viewer) return false;
+        const cursorRect = cursor.getBoundingClientRect();
+        const viewerRect = viewer.getBoundingClientRect();
+        if (!cursorRect.height || !viewerRect.height) return false;
+
+        const queue = [{ value: editor, depth: 0 }];
+        const visited = new WeakSet();
+        let scrollController = null;
+        while (queue.length && !scrollController) {
+            const { value, depth } = queue.shift();
+            if (!value || !['object', 'function'].includes(typeof value) || visited.has(value)) continue;
+            visited.add(value);
+            try {
+                const candidate = value.gz;
+                const ownsViewer = value.$v?.Hg === viewer;
+                const ownsVerticalScrollbar = candidate?.canvas?.parentElement?.id === 'id_vertical_scroll';
+                if (candidate && typeof candidate.scrollBy === 'function' && (ownsViewer || ownsVerticalScrollbar)) {
+                    scrollController = candidate;
+                    break;
+                }
+            } catch {
+                // Ignore cross-object getters exposed by the minified SDK.
+            }
+            if (depth >= 3) continue;
+            let keys = [];
+            try {
+                keys = Object.keys(value).slice(0, 180);
+            } catch {
+                continue;
+            }
+            for (const key of keys) {
+                try {
+                    const child = value[key];
+                    if (child && ['object', 'function'].includes(typeof child)) {
+                        queue.push({ value: child, depth: depth + 1 });
+                    }
+                } catch {
+                    // Some OnlyOffice SDK properties throw while initializing.
+                }
+            }
+        }
+        if (!scrollController) return false;
+
+        const cursorCenter = cursorRect.top + (cursorRect.height / 2);
+        const desiredCenter = viewerRect.top + (viewerRect.height / 2);
+        const delta = cursorCenter - desiredCenter;
+        if (Math.abs(delta) < 24) return true;
+        scrollController.scrollBy(0, delta, false);
+        return true;
+    };
 
     const executeEditorMethod = (method, args = []) => {
         const editor = getEditor();
         if (!editor || typeof editor.executeMethod !== 'function') {
-            return Promise.reject(new Error('EDITOR_NOT_READY'));
+            try {
+                return Promise.resolve(executeCommunityEditorMethod(method, args));
+            } catch (error) {
+                return Promise.reject(error);
+            }
         }
         return new Promise((resolve, reject) => {
             let settled = false;
@@ -59,12 +337,19 @@ export function useReviewEditor(state, helpers) {
         .map((item) => item.trim())
         .filter((item) => item.length >= 6);
 
+    const clauseBodyCandidate = (text) => {
+        const match = String(text || '').trim().match(/^\d+(?:\.\d+)+\s*(.+)$/s);
+        return match?.[1]?.trim() || '';
+    };
+
     const buildSuggestionCandidates = (originalText, item = {}) => {
         const candidates = [
-            originalText,
             item.anchor_hint,
+            item.anchorHint,
+            originalText,
             item.original_clause,
             item.clause,
+            clauseBodyCandidate(originalText),
             ...splitCandidateSentences(originalText),
         ];
         const compact = normalizeCandidate(originalText);
@@ -85,6 +370,29 @@ export function useReviewEditor(state, helpers) {
             });
     };
 
+    const buildReplacementCandidates = (originalText, item = {}) => {
+        const candidates = [
+            item.anchor_hint,
+            item.anchorHint,
+            originalText,
+            item.original_text,
+            item.original_clause,
+            item.current_clause,
+            item.contract_clause,
+            clauseBodyCandidate(originalText),
+        ];
+        const seen = new Set();
+        return candidates
+            .map((candidate) => String(candidate || '').trim())
+            .filter((candidate) => normalizeCandidate(candidate).length >= 8)
+            .filter((candidate) => {
+                const key = normalizeCandidate(candidate);
+                if (!key || seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+    };
+
     const findTextRangeByCandidates = async (candidates) => {
         for (const candidate of candidates) {
             const range = await findTextRange(candidate);
@@ -94,7 +402,7 @@ export function useReviewEditor(state, helpers) {
     };
 
     const ensureEditorReady = () => {
-        if (!getEditor()) {
+        if (!getEditor() && !getCommunityEditor()) {
             ElMessage.warning('编辑器尚未就绪，请等待左侧文档加载完成。');
             return false;
         }
@@ -102,6 +410,8 @@ export function useReviewEditor(state, helpers) {
     };
 
     const previewSuggestion = (item, status = '待采纳') => {
+        item._showPreview = status === '待采纳' ? !item._showPreview : true;
+        if (!item._showPreview) return;
         selectedSuggestionPreview.value = {
             before: suggestionOriginal(item) || 'AI 未返回可直接定位的原文。',
             after: suggestionText(item) || 'AI 未返回建议替换文本。',
@@ -109,32 +419,60 @@ export function useReviewEditor(state, helpers) {
         };
     };
 
-    const locateText = async (text) => {
+    const locateText = async (text, item = {}) => {
         if (!text) {
             ElMessage.info('AI 未返回可定位的原文，请在文档中手动核对该建议。');
             return;
         }
         if (!ensureEditorReady()) return;
         try {
-            const range = await findTextRange(text);
-            if (!range) {
+            const matched = await findTextRangeByCandidates(buildSuggestionCandidates(text, item));
+            if (!matched?.range) {
                 ElMessage.info('未在文档中找到对应条款原文。');
                 return;
             }
-            await executeEditorMethod('SelectRange', [range]);
-            ElMessage.success('已定位到文档中的对应条款。');
+            await executeEditorMethod('SelectRange', [matched.range]);
+            await centerCommunityEditorSelection();
         } catch (error) {
             ElMessage.error('文档定位失败，请检查 OnlyOffice 是否已完全加载。');
         }
     };
 
-    const replaceTextOnServer = async (originalText, suggestedText, item = {}) => {
+    const locateTextAfterReload = async (target = {}) => {
+        const text = String(target?.text || '').trim();
+        if (!text) return false;
+        const clauseLead = text.match(/^\s*\d+(?:\.\d+)+\s+[^。；;!?！？]{6,120}/)?.[0]?.trim();
+        const candidates = buildSuggestionCandidates(text, {})
+            .concat([clauseLead, text.slice(0, 120), text.slice(0, 80)])
+            .filter(Boolean);
+        for (let attempt = 0; attempt < 6; attempt += 1) {
+            try {
+                const matched = await findTextRangeByCandidates(candidates);
+                if (matched?.range) {
+                    await executeEditorMethod('SelectRange', [matched.range]);
+                    await centerCommunityEditorSelection();
+                    return true;
+                }
+            } catch {
+                // The document frame may still be rebuilding its searchable
+                // text model immediately after onDocumentReady.
+            }
+            await new Promise((resolve) => setTimeout(resolve, 220));
+        }
+        return false;
+    };
+
+    const replaceTextOnServer = async (originalText, suggestedText, item = {}, options = {}) => {
         const response = await api.replaceContractText(contract.id, {
             originalText,
             suggestedText,
-            originalCandidates: buildSuggestionCandidates(originalText, item),
+            originalCandidates: buildReplacementCandidates(originalText, item),
+            mode: options.mode === 'review' ? 'review' : 'edit',
+            suggestionIndex: options.suggestionIndex,
+            suggestionId: options.suggestionId || item.revision_group?.suggestion_id || item.suggestion_id || item.id || '',
+            expectedDocumentKey: contract.editorConfig?.document?.key,
         });
-        return response.data.replacements || 0;
+        return response.data;
     };
 
     const markAdoptedText = async (originalText, suggestedText) => {
@@ -166,7 +504,6 @@ export function useReviewEditor(state, helpers) {
             try {
                 const replacements = await replaceTextOnServer(originalText, suggestedText, item);
                 onSuccess?.({ fallback: true, replacements });
-                ElMessage.success(`${statusPrefix}；当前编辑器不刷新，重新打开该合同后可见。`);
             } catch (serverError) {
                 const message = serverError.response?.data?.error || '服务器替换失败，请缩短原文片段后重试。';
                 ElMessage.error(message);
@@ -179,7 +516,7 @@ export function useReviewEditor(state, helpers) {
             return;
         }
         try {
-            const matched = await findTextRangeByCandidates(buildSuggestionCandidates(originalText, item));
+            const matched = await findTextRangeByCandidates(buildReplacementCandidates(originalText, item));
             if (!matched?.range) {
                 await runServerFallback('编辑器未匹配到原文，已尝试从 DOCX 源文件替换');
                 return;
@@ -197,31 +534,55 @@ export function useReviewEditor(state, helpers) {
         }
     };
 
-    const refreshEditorDocument = async () => {
-        const editor = getEditor();
-        if (!editor) return false;
+    const settleEditorReload = (error = null) => {
+        if (!editorReloadWaiter) return;
+        const waiter = editorReloadWaiter;
+        editorReloadWaiter = null;
+        clearTimeout(waiter.timer);
+        if (error) waiter.reject(error);
+        else waiter.resolve(true);
+    };
 
+    const reloadEditorConfig = async (nextConfig, message = '正在重新载入修订后的合同...', restoreTarget = null) => {
+        if (!nextConfig) return false;
+        editorReloading.value = true;
+        editorReloadMessage.value = message;
+        isEditorReady.value = false;
+        hasPendingEditorChanges.value = false;
+        stopAutoForceSave();
+
+        settleEditorReload(new Error('EDITOR_RELOAD_SUPERSEDED'));
+        const ready = new Promise((resolve, reject) => {
+            const timer = window.setTimeout(() => {
+                if (editorReloadWaiter?.timer !== timer) return;
+                editorReloadWaiter = null;
+                reject(new Error('EDITOR_RELOAD_TIMEOUT'));
+            }, 30000);
+            editorReloadWaiter = { resolve, reject, timer };
+        });
+
+        // The isolated editor component owns all DOM below its stable Vue host.
+        // Replacing the config therefore rebuilds only the OnlyOffice instance
+        // and keeps the review page, filters, scroll and history state intact.
+        contract.editorConfig = JSON.parse(JSON.stringify(nextConfig));
+        await nextTick();
+        await ready;
+        if (restoreTarget?.text) await locateTextAfterReload(restoreTarget);
+        return true;
+    };
+
+    const runDocumentMutation = (task) => {
+        const run = documentMutationQueue.then(task, task);
+        documentMutationQueue = run.catch(() => undefined);
+        return run;
+    };
+
+    const refreshEditorDocument = async () => {
         try {
             const res = await api.getFreshEditorConfig(contract.id);
-            const editorConfig = res.data?.editorConfig;
-            if (editorConfig && typeof editor.refreshFile === 'function') {
-                editor.refreshFile(editorConfig.document || editorConfig);
-                contract.editorConfig = editorConfig;
-                return true;
-            }
-            if (editorConfig && typeof editor.setConfig === 'function') {
-                editor.setConfig(editorConfig);
-                contract.editorConfig = editorConfig;
-                return true;
-            }
-        } catch {
-            // Some OnlyOffice builds do not allow changing config after init.
-        }
-
-        try {
-            await executeEditorMethod('ForceSave', []);
-            return true;
-        } catch {
+            return await reloadEditorConfig(res.data?.editorConfig);
+        } catch (error) {
+            console.warn('[OnlyOffice] refresh editor failed', error);
             return false;
         }
     };
@@ -232,10 +593,8 @@ export function useReviewEditor(state, helpers) {
             const refreshed = await refreshEditorDocument();
             if (refreshed) {
                 onSuccess?.({ fallback: true, refreshed: true, replacements });
-                ElMessage.success('已更新源文件并尝试自动刷新编辑器');
             } else {
                 onSuccess?.({ fallback: true, replacements });
-                ElMessage.success('已更新源文件，刷新页面后可查看变更');
             }
         } catch (err) {
             const msg = err.response?.data?.error || '替换失败';
@@ -244,97 +603,54 @@ export function useReviewEditor(state, helpers) {
         }
     };
 
-    const replaceTextInEditorFinal = async (originalText, suggestedText, onSuccess, onFailure, item = {}) => {
-        if (!ensureEditorReady()) {
-            await serverFallback(originalText, suggestedText, onSuccess, onFailure, item);
-            return;
-        }
-
-        let success = false;
-        const editor = getEditor();
-
+    const replaceTextInEditorFinal = (originalText, suggestedText, onSuccess, onFailure, item = {}, options = {}) => runDocumentMutation(async () => {
         try {
-            const canUseLiveApi = typeof editor.executeMethod === 'function'
-                || typeof editor.createConnector === 'function'
-                || Boolean(window.Asc?.plugin?.callCommand);
-            if (!canUseLiveApi) {
-                await serverFallback(originalText, suggestedText, onSuccess, onFailure, item);
-                return;
-            }
-
-            const matched = await findTextRangeByCandidates(buildSuggestionCandidates(originalText, item));
-            if (matched?.range) {
-                await executeEditorMethod('SelectRange', [matched.range]);
-            }
-
-            if (matched?.range && typeof editor.createConnector === 'function') {
-                const connector = editor.createConnector();
-                if (connector?.callCommand) {
-                    const asc = window.Asc || (window.Asc = {});
-                    asc.scope = asc.scope || {};
-                    asc.scope.suggestedText = suggestedText;
-                    await new Promise((resolve) => {
-                        connector.callCommand(function() {
-                            try {
-                                const oDocument = Api.GetDocument();
-                                const oRange = oDocument.GetRangeBySelect?.() || null;
-                                if (oRange) oRange.Delete();
-                                const oParagraph = Api.CreateParagraph();
-                                oParagraph.AddText(Asc.scope.suggestedText);
-                                oDocument.InsertContent([oParagraph], false, { KeepTextOnly: false });
-                            } catch (e) {}
-                        }, true);
-                        setTimeout(resolve, 800);
-                    });
-                    success = true;
-                }
-            }
-
-            if (!success && matched?.range && window.Asc?.plugin?.callCommand) {
-                window.Asc.scope = window.Asc.scope || {};
-                window.Asc.scope.suggestedText = suggestedText;
-                await new Promise((resolve) => {
-                    window.Asc.plugin.callCommand(function() {
-                        try {
-                            const oDocument = Api.GetDocument();
-                            const oRange = oDocument.GetRangeBySelect?.() || null;
-                            if (oRange) oRange.Delete();
-                            const oParagraph = Api.CreateParagraph();
-                            oParagraph.AddText(Asc.scope.suggestedText);
-                            oDocument.InsertContent([oParagraph], false, { KeepTextOnly: false });
-                        } catch (e) {}
-                    }, true);
-                    setTimeout(resolve, 800);
-                });
-                success = true;
-            }
-
-            if (!success && matched?.range) {
-                await executeEditorMethod('SelectRange', [matched.range]);
-                try {
-                    await executeEditorMethod('PasteText', [suggestedText]);
-                    success = true;
-                } catch {}
-                if (!success) {
-                    try {
-                        await executeEditorMethod('ReplaceText', [matched.range, suggestedText]);
-                        success = true;
-                    } catch {}
-                }
-            }
-
-            if (success) {
-                await markAdoptedText(originalText, suggestedText);
-                onSuccess?.({ realTime: true });
-                ElMessage.success('建议已实时采纳并更新到文档');
-                return;
-            }
+            if (!await ensureReviewApplyMode()) return onFailure?.('编辑器修订模式未同步');
+            await forceSaveCurrentDocument(true);
+            await new Promise((resolve) => setTimeout(resolve, 650));
+            const result = await replaceTextOnServer(originalText, suggestedText, item, options);
+            await reloadEditorConfig(result.editorConfig, undefined, {
+                text: result.replacementText || suggestedText,
+            });
+            onSuccess?.(result);
         } catch (error) {
-            console.warn('实时替换失败，进入服务器兜底', error);
+            const message = error.message === 'EDITOR_RELOAD_TIMEOUT'
+                ? '修订已写入，但在线文档重新加载超时，请刷新页面查看。'
+                : (error.message === 'EDITOR_TRACK_REVISIONS_MISMATCH'
+                    ? '修订已写入，但编辑器模式校验失败，请刷新页面确认。'
+                    : (error.response?.data?.error || '替换失败，文档未发生变化。'));
+            ElMessage.error(message);
+            onFailure?.(message);
         }
+    });
 
-        await serverFallback(originalText, suggestedText, onSuccess, onFailure, item);
-    };
+    const appendClauseInEditorFinal = (title, content, onSuccess, onFailure, options = {}) => runDocumentMutation(async () => {
+        try {
+            if (!await ensureReviewApplyMode()) return onFailure?.('编辑器修订模式未同步');
+            await forceSaveCurrentDocument(true);
+            await new Promise((resolve) => setTimeout(resolve, 650));
+            const response = await api.appendContractClause(contract.id, {
+                title,
+                content,
+                mode: options.mode === 'review' ? 'review' : 'edit',
+                suggestionIndex: options.suggestionIndex,
+                suggestionId: options.suggestionId || '',
+                anchorHint: options.anchorHint || '',
+                currentClause: options.currentClause || '',
+                targetClauseNo: options.targetClauseNo || '',
+                targetHeading: options.targetHeading || '',
+                expectedDocumentKey: contract.editorConfig?.document?.key,
+            });
+            await reloadEditorConfig(response.data?.editorConfig, undefined, {
+                text: response.data?.insertedText || content,
+            });
+            onSuccess?.({ appended: true, ...response.data });
+        } catch (err) {
+            const msg = err.response?.data?.error || '新增条款失败。';
+            ElMessage.error(msg);
+            onFailure?.(msg);
+        }
+    });
 
     // --- Force save ---
     const forceSaveCurrentDocument = async (silent = true) => {
@@ -349,7 +665,6 @@ export function useReviewEditor(state, helpers) {
                 documentKey: contract.editorConfig?.document?.key,
             });
             hasPendingEditorChanges.value = false;
-            if (!silent) ElMessage.success('已触发文档保存同步');
             return true;
         } catch (error) {
             console.warn('[OnlyOffice] force-save failed', error.response?.data || error.message);
@@ -401,20 +716,45 @@ export function useReviewEditor(state, helpers) {
 
     const onDocumentReady = () => {
         console.log("[INFO] OnlyOffice document is ready.");
-        setTimeout(() => {
-            isEditorReady.value = Boolean(window?.DocEditor?.instances?.docEditorComponent);
-            if (isEditorReady.value) startAutoForceSave();
+        setTimeout(async () => {
+            isEditorReady.value = Boolean(getEditor() || getCommunityEditor());
+            if (isEditorReady.value) {
+                const desiredMode = reviewApplyMode.value;
+                bindTrackRevisionsState();
+                try {
+                    await syncEditorTrackRevisions(desiredMode, { notify: false });
+                    editorReloading.value = false;
+                    startAutoForceSave();
+                    settleEditorReload();
+                } catch (error) {
+                    editorReloading.value = false;
+                    settleEditorReload(error);
+                    ElMessage.error('在线文档已载入，但修订模式校验失败，请重新切换后再处理建议。');
+                }
+            }
         }, 300);
+    };
+
+    const onEditorError = (event) => {
+        editorReloading.value = false;
+        isEditorReady.value = false;
+        settleEditorReload(new Error(event?.data?.errorDescription || 'EDITOR_RELOAD_FAILED'));
+        console.error('[OnlyOffice] editor error', event?.data || event);
+        ElMessage.error('在线文档加载失败，请刷新后重试。');
     };
 
     return {
         forceSaveTimer, forceSaveDebounceTimer, forceSaveInFlight, hasPendingEditorChanges,
-        getEditor, executeEditorMethod, findTextRange, normalizeCandidate,
-        splitCandidateSentences, buildSuggestionCandidates, findTextRangeByCandidates,
-        ensureEditorReady, previewSuggestion, locateText, replaceTextOnServer,
-        markAdoptedText, replaceTextInEditor, refreshEditorDocument, serverFallback,
-        replaceTextInEditorFinal,
+        editorModeSyncing, editorTrackRevisionsActive, editorModeSyncError,
+        getEditor, getCommunityEditor, executeEditorMethod, findTextRange, normalizeCandidate,
+        splitCandidateSentences, clauseBodyCandidate, buildSuggestionCandidates, buildReplacementCandidates, findTextRangeByCandidates,
+        centerCommunityEditorSelection,
+        ensureEditorReady, previewSuggestion, locateText, locateTextAfterReload, replaceTextOnServer,
+        markAdoptedText, replaceTextInEditor, reloadEditorConfig, refreshEditorDocument, serverFallback,
+        runDocumentMutation,
+        replaceTextInEditorFinal, appendClauseInEditorFinal,
         forceSaveCurrentDocument, scheduleForceSave, stopAutoForceSave, startAutoForceSave,
-        onDocumentStateChange, onDocumentReady,
+        readEditorTrackRevisions, syncEditorTrackRevisions, ensureReviewApplyMode, setReviewApplyMode,
+        onDocumentStateChange, onDocumentReady, onEditorError,
     };
 }

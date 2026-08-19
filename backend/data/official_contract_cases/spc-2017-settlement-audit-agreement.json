@@ -1,0 +1,20 @@
+{
+  "schema": "official_case_v1",
+  "source_id": "official-case:spc:2017-zuigao-faminzhong-20",
+  "title": "双方签章结算审定文件可作为工程价款依据",
+  "category": "建设工程施工合同纠纷",
+  "case_no": "(2017)最高法民终20号",
+  "publication_form": "最高人民法院第三巡回法庭典型案例",
+  "court": "最高人民法院",
+  "published_at": "2017-10-30",
+  "verified_at": "2026-08-19",
+  "jurisdiction": "CN",
+  "official_source": "最高人民法院",
+  "official_url": "https://www.court.gov.cn/xunhui3/xiangqing/66242.html",
+  "applicable_contract_types": ["施工类", "咨询类"],
+  "facts": "建设单位、施工单位与造价咨询主体就结算审核结果形成书面文件并签字盖章，之后一方又对结算金额提出异议。",
+  "issue": "经相关主体签章确认的结算审定文件能否作为工程价款结算依据。",
+  "reasoning": "当事人对结算审核结果作出明确书面确认，且无证据证明存在法定无效或可撤销事由时，应尊重该结算合意。",
+  "result": "最高人民法院以签章确认的结算审定文件作为确定工程价款的重要依据。",
+  "review_guidance": "明确造价咨询成果的确认主体、授权范围和生效条件；结算审定文件签署前应完成成本、工程和法务会签，防止无授权或口径不一致。"
+}

@@ -8,7 +8,7 @@ export function useReviewSession(state, deps) {
         contract, perspective, preAnalysisData, reviewData,
         activeAiTab, cameFromHistory, selectedTemplateId,
         allSuggestedReviewPoints, allPotentialParties, allSuggestedCorePurposes,
-        selectedReviewPoints, customPurposes,
+        selectedReviewPoints, customPurposes, reviewApplyMode,
         saveState, resetState,
     } = state;
     const {
@@ -61,6 +61,10 @@ export function useReviewSession(state, deps) {
 
         activeStep.value = savedState.activeStep;
         activeAiTab.value = savedState.activeAiTab || 'suggestions';
+        if (savedState.reviewApplyMode === 'edit' || savedState.reviewApplyMode === 'review') {
+            reviewApplyMode.value = savedState.reviewApplyMode;
+            localStorage.setItem('contract_apply_mode', reviewApplyMode.value);
+        }
         if (!['summary', 'suggestions', 'knowledge', 'workspace'].includes(activeAiTab.value)) {
             activeAiTab.value = 'summary';
         }
@@ -72,7 +76,13 @@ export function useReviewSession(state, deps) {
         perspective.value = savedState.perspective;
         Object.assign(preAnalysisData, savedState.preAnalysisData || {});
         selectedTemplateId.value = savedState.selectedTemplateId || preAnalysisData.template_id || '';
-        Object.assign(reviewData, savedState.reviewData || {});
+        // The server is authoritative for applied/pending-review suggestion
+        // states. Keeping the browser's older reviewData after a document write
+        // makes resolved risk boxes revert to red/yellow on reload.
+        Object.assign(reviewData, {
+            ...(savedState.reviewData || {}),
+            ...(response.data.reviewData || {}),
+        });
 
         selectedReviewPoints.value = savedState.selectedReviewPoints || [];
         customPurposes.value = savedState.customPurposes || [{ value: '' }];

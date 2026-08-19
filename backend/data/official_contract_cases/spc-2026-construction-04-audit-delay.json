@@ -1,0 +1,20 @@
+{
+  "schema": "official_case_v1",
+  "source_id": "official-case:spc:2026-construction-04",
+  "title": "发包人迟延审计时工程价款的司法确定",
+  "category": "建设工程施工合同纠纷",
+  "case_no": null,
+  "publication_form": "最高人民法院建设工程质量保护典型案例之四",
+  "court": "人民法院",
+  "published_at": "2026-06-29",
+  "verified_at": "2026-08-19",
+  "jurisdiction": "CN",
+  "official_source": "最高人民法院",
+  "official_url": "https://www.court.gov.cn/zixun/xiangqing/504211.html",
+  "applicable_contract_types": ["施工类", "咨询类"],
+  "facts": "合同约定以审计结果作为结算依据，但发包人长期未完成审计，承包人请求支付工程价款。",
+  "issue": "审计长期未完成时，是否可以通过司法鉴定等方式确定工程价款。",
+  "reasoning": "审计约定不应被用于无限期拖延结算；在审计迟延且具备鉴定条件时，可依法通过司法鉴定确定工程价款。",
+  "result": "法院未允许发包人以未完成审计为由长期拒付，并依据鉴定等证据确定价款。",
+  "review_guidance": "结算条款必须约定送审资料、补正时限、审核期限、逾期后果和争议鉴定机制，避免将审计设置为无期限付款前提。"
+}

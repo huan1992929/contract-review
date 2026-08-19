@@ -20,7 +20,9 @@ const path = require('path');
 // 向量库统一配置：Milvus collection 名、向量字段、知识库 seed 目录与开关
 // 所有子模块共享同一份常量与 Milvus 连接单例状态，避免多实例导致连接泄漏
 const lawsMarkdownDir = path.join(__dirname, '..', '..', 'data', 'laws');
-const caseJsonDir = path.join(__dirname, '..', '..', 'data', 'candidate_55192');
+// 默认只加载已经过官方来源核验的合同类案例。历史 candidate_55192 为无关刑事
+// 判例，保留文件用于审计/回滚，但不得再作为正式合同审查 seed。
+const caseJsonDir = path.join(__dirname, '..', '..', 'data', 'official_contract_cases');
 const COLLECTION_NAME = process.env.MILVUS_COLLECTION || 'contract_review_knowledge';
 const VECTOR_FIELD = 'embedding';
 const KNOWLEDGE_SEED_TYPES = String(process.env.KNOWLEDGE_SEED_TYPES || 'law,case')
@@ -29,7 +31,7 @@ const KNOWLEDGE_SEED_TYPES = String(process.env.KNOWLEDGE_SEED_TYPES || 'law,cas
     .filter(Boolean);
 const LAW_SEED_FILE_BATCH_SIZE = Math.max(1, Number(process.env.LAW_SEED_FILE_BATCH_SIZE || 20));
 // CASE_SEED_FILE_BATCH_SIZE:案例 JSON 文件分批入库大小,避免一次性把所有文件解析结果累积在内存导致 OOM
-const CASE_SEED_FILE_BATCH_SIZE = Math.max(1, Number(process.env.LAW_SEED_FILE_BATCH_SIZE || 20));
+const CASE_SEED_FILE_BATCH_SIZE = Math.max(1, Number(process.env.CASE_SEED_FILE_BATCH_SIZE || 20));
 // CASE_SEED_LIMIT:未设置(空)时不限制数量,获取目录下所有文件;设为正整数时限制文件数;设为 0 表示不导入
 const rawCaseSeedLimit = process.env.CASE_SEED_LIMIT;
 const CASE_SEED_LIMIT = (rawCaseSeedLimit === undefined || rawCaseSeedLimit === '')

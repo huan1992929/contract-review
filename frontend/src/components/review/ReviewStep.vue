@@ -1,25 +1,70 @@
 <template>
-  <div class="flex-grow min-h-0 flex space-x-4">
+  <div class="flex-grow min-h-0 flex gap-4">
     <!-- Left Side: OnlyOffice Editor -->
-    <div class="w-2/3 bg-white rounded-lg shadow-md overflow-hidden h-full flex flex-col">
-      <div class="px-3 py-2 border-b border-border-color bg-bg-subtle flex items-center justify-between gap-3">
-        <div class="text-sm text-text-main">
-          左侧为合同实时预览与编辑区。可选中文本后进行专项审查。
+    <div class="basis-0 flex-[3] min-w-0 bg-white rounded-lg shadow-md overflow-hidden h-full flex flex-col">
+      <div class="document-workbar px-3 py-2 border-b border-border-color bg-bg-subtle flex items-center justify-between gap-4">
+        <div class="min-w-0 flex items-center gap-5">
+          <StepHeader :activeStep="2" compact />
+          <div class="document-context border-l border-border-color pl-4">
+            <p class="text-xs font-semibold text-text-dark whitespace-nowrap">合同协同区</p>
+            <p class="mt-0.5 text-xs text-text-light whitespace-nowrap">选中文本可进行专项审查</p>
+          </div>
         </div>
-        <button @click="prepareFocusedReviewFromSelection" class="px-3 py-1.5 text-xs font-medium text-white bg-primary rounded hover:bg-primary-dark">
-          读取选中文本审查
-        </button>
+        <div class="flex-shrink-0 flex items-center gap-3">
+          <el-dropdown trigger="click" @command="exportContractDocument">
+            <button class="contract-export-button" :disabled="exportingDocument" aria-label="导出合同文件">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 17v3h14v-3" /></svg>
+              {{ exportingDocument ? '正在导出' : '一键导出' }}
+              <span class="contract-export-caret">⌄</span>
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="review-docx">审阅版 · Word（保留修订）</el-dropdown-item>
+                <el-dropdown-item divided command="final-docx">最终版 · Word（接受全部修订）</el-dropdown-item>
+                <el-dropdown-item command="final-pdf">最终版 · PDF</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <div
+            :class="['apply-mode-switch', editorModeSyncing ? 'is-syncing' : '']"
+            aria-label="AI 建议采纳方式"
+            :aria-busy="editorModeSyncing"
+          >
+            <button
+              @click="setReviewApplyMode('review')"
+              :disabled="editorModeSyncing || !isEditorReady"
+              :class="reviewApplyMode === 'review' ? 'is-active' : ''"
+              :aria-pressed="reviewApplyMode === 'review'"
+              :title="editorModeSyncError ? '编辑器模式尚未同步，请重试' : '生成可接受或拒绝的修订记录'"
+            >审阅修订</button>
+            <button
+              @click="setReviewApplyMode('edit')"
+              :disabled="editorModeSyncing || !isEditorReady"
+              :class="reviewApplyMode === 'edit' ? 'is-active' : ''"
+              :aria-pressed="reviewApplyMode === 'edit'"
+              :title="editorModeSyncError ? '编辑器模式尚未同步，请重试' : '直接替换合同正文'"
+            >直接编辑</button>
+          </div>
+          <button @click="prepareFocusedReviewFromSelection" class="px-3 py-1.5 text-xs font-medium text-white bg-primary rounded hover:bg-primary-dark">
+            读取选中文本审查
+          </button>
+        </div>
       </div>
-      <DocumentEditor
+      <OnlyOfficeEditor
         v-if="contract.editorConfig"
         id="docEditorComponent"
         ref="docEditorComponent"
         class="flex-grow min-h-0"
         :documentServerUrl="onlyOfficeUrl"
         :config="contract.editorConfig"
-        :events_onDocumentReady="onDocumentReady"
-        :events_onDocumentStateChange="onDocumentStateChange"
+        :onDocumentReady="onDocumentReady"
+        :onDocumentStateChange="onDocumentStateChange"
+        :onError="onEditorError"
       />
+      <div v-else-if="editorReloading" class="editor-reload-state flex-grow min-h-0">
+        <span class="editor-reload-spinner" aria-hidden="true"></span>
+        <p>{{ editorReloadMessage }}</p>
+      </div>
       <div v-if="selectedSuggestionPreview" class="border-t border-border-color bg-white p-3 max-h-44 overflow-y-auto">
         <div class="flex items-center justify-between">
           <p class="text-sm font-semibold text-text-dark">最近采纳预览</p>
@@ -39,9 +84,9 @@
     </div>
 
     <!-- Right Side: AI Review Panel -->
-    <div class="w-1/3 bg-white rounded-lg shadow-md flex flex-col h-full">
+    <div class="basis-0 flex-[2] min-w-0 bg-white rounded-lg shadow-md flex flex-col h-full">
       <!-- Panel Header -->
-      <div class="p-3 border-b border-border-color flex justify-between items-center flex-shrink-0">
+      <div class="p-3 border-b border-border-color flex flex-col gap-3 flex-shrink-0">
         <div class="flex items-center">
           <h3 class="text-lg font-semibold text-text-dark">AI 审查报告</h3>
           <div class="ml-4 flex items-center">
@@ -49,13 +94,13 @@
             <el-switch v-model="showPlainLanguage" size="small"></el-switch>
           </div>
         </div>
-        <div class="flex items-center flex-nowrap whitespace-nowrap">
-          <button @click="exportReport('html')" class="mr-3 text-sm font-medium text-primary hover:text-primary-dark whitespace-nowrap">导出HTML</button>
-          <button @click="exportReport('word')" class="mr-3 text-sm font-medium text-primary hover:text-primary-dark whitespace-nowrap">导出Word</button>
-          <button @click="downloadPdfAnnotations" class="mr-3 text-sm font-medium text-primary hover:text-primary-dark whitespace-nowrap">PDF批注</button>
+        <div class="flex items-center flex-wrap gap-x-3 gap-y-2">
+          <button @click="exportReport('html')" class="text-sm font-medium text-primary hover:text-primary-dark whitespace-nowrap">导出HTML</button>
+          <button @click="exportReport('word')" class="text-sm font-medium text-primary hover:text-primary-dark whitespace-nowrap">导出Word</button>
+          <button @click="downloadPdfAnnotations" class="text-sm font-medium text-primary hover:text-primary-dark whitespace-nowrap">PDF批注</button>
           <template v-if="cameFromHistory">
             <button @click="goBackToUpload" class="text-sm font-medium text-primary hover:text-primary-dark">重新上传</button>
-            <button @click="goBackSmart" class="ml-4 text-sm font-medium text-primary hover:text-primary-dark">返回历史</button>
+            <button @click="goBackSmart" class="text-sm font-medium text-primary hover:text-primary-dark">返回历史</button>
           </template>
           <template v-else>
             <button @click="goBackSmart" class="text-sm font-medium text-primary hover:text-primary-dark">返回上一步</button>
@@ -75,7 +120,7 @@
 
       <!-- Tab Content -->
       <div class="p-3 overflow-y-auto flex-grow">
-        <ReviewSummaryTab v-if="activeAiTab === 'summary'" />
+        <ZhongAnReviewReport v-if="activeAiTab === 'summary'" />
         <ReviewSuggestionsTab v-if="activeAiTab === 'suggestions'" />
         <!-- Relevant Laws (Knowledge tab) -->
         <div v-if="activeAiTab === 'knowledge'">
@@ -100,37 +145,160 @@
 
 <script>
 import { inject } from 'vue';
-import { ElSwitch, ElTag } from 'element-plus';
-import { DocumentEditor } from '@onlyoffice/document-editor-vue';
-import ReviewSummaryTab from './ReviewSummaryTab.vue';
+import { ElSwitch, ElTag, ElDropdown, ElDropdownMenu, ElDropdownItem } from 'element-plus';
+import StepHeader from './StepHeader.vue';
+import OnlyOfficeEditor from './OnlyOfficeEditor.vue';
+import ZhongAnReviewReport from './ZhongAnReviewReport.vue';
 import ReviewSuggestionsTab from './ReviewSuggestionsTab.vue';
 import ReviewWorkspaceTab from './ReviewWorkspaceTab.vue';
 
 export default {
   name: 'ReviewStep',
   components: {
-    DocumentEditor, ElSwitch, ElTag,
-    ReviewSummaryTab, ReviewSuggestionsTab, ReviewWorkspaceTab,
+    OnlyOfficeEditor, ElSwitch, ElTag, ElDropdown, ElDropdownMenu, ElDropdownItem, StepHeader,
+    ZhongAnReviewReport, ReviewSuggestionsTab, ReviewWorkspaceTab,
   },
   setup() {
     const review = inject('review');
     const {
-      contract, onlyOfficeUrl, onDocumentReady, onDocumentStateChange,
+      contract, onlyOfficeUrl, onDocumentReady, onDocumentStateChange, onEditorError,
+      editorReloading, editorReloadMessage,
+      isEditorReady, editorModeSyncing, editorModeSyncError, setReviewApplyMode,
       docEditorComponent, selectedSuggestionPreview,
       prepareFocusedReviewFromSelection,
-      showPlainLanguage, exportReport, downloadPdfAnnotations,
+      showPlainLanguage, reviewApplyMode, exportReport, downloadPdfAnnotations,
+      exportContractDocument, exportingDocument,
       cameFromHistory, goBackToUpload, goBackSmart,
       activeAiTab, reviewData, isLawOutdated,
     } = review;
 
     return {
-      contract, onlyOfficeUrl, onDocumentReady, onDocumentStateChange,
+      contract, onlyOfficeUrl, onDocumentReady, onDocumentStateChange, onEditorError,
+      editorReloading, editorReloadMessage,
+      isEditorReady, editorModeSyncing, editorModeSyncError, setReviewApplyMode,
       docEditorComponent, selectedSuggestionPreview,
       prepareFocusedReviewFromSelection,
-      showPlainLanguage, exportReport, downloadPdfAnnotations,
+      showPlainLanguage, reviewApplyMode, exportReport, downloadPdfAnnotations,
+      exportContractDocument, exportingDocument,
       cameFromHistory, goBackToUpload, goBackSmart,
       activeAiTab, reviewData, isLawOutdated,
     };
   },
 };
 </script>
+
+<style scoped>
+.document-context {
+  flex: 0 0 148px;
+}
+
+.apply-mode-switch {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid #cfded9;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.apply-mode-switch button {
+  padding: 4px 9px;
+  border-radius: 4px;
+  color: #687b77;
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.apply-mode-switch button.is-active {
+  color: #fff;
+  background: #008f87;
+}
+
+.apply-mode-switch button:disabled {
+  cursor: wait;
+  opacity: .56;
+}
+
+.apply-mode-switch.is-syncing {
+  border-color: #82bbb4;
+  box-shadow: 0 0 0 2px rgba(0, 143, 135, .08);
+}
+
+.contract-export-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid #c9a75d;
+  border-radius: 6px;
+  background: #fffdf7;
+  color: #76561d;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.contract-export-button:hover:not(:disabled) {
+  border-color: #ad8030;
+  background: #fff8e8;
+  color: #5f4314;
+}
+
+.contract-export-button:disabled {
+  cursor: wait;
+  opacity: .62;
+}
+
+.contract-export-button svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.contract-export-caret {
+  margin-left: 1px;
+  color: #9b7a3c;
+}
+
+.editor-reload-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: #f7faf8;
+  color: #687b77;
+  font-size: 13px;
+}
+
+.editor-reload-spinner {
+  width: 26px;
+  height: 26px;
+  border: 3px solid #cfe1dc;
+  border-top-color: #008f87;
+  border-radius: 50%;
+  animation: editor-reload-spin 0.8s linear infinite;
+}
+
+@keyframes editor-reload-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 1280px) {
+  .document-context {
+    display: none;
+  }
+}
+
+@media (max-width: 1024px) {
+  .document-workbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+</style>

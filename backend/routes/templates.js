@@ -20,21 +20,11 @@
  */
 
 const express = require('express');
-const path = require('path');
-const fs = require('fs');
 const db = require('../database');
-const { generateTypicalDescription } = require('../services/reviewTemplates');
+const { generateTypicalDescription, loadTemplatesFromJson } = require('../services/reviewTemplates');
 const { embedText } = require('../services/embeddingClient');
 
 const router = express.Router();
-
-// JSON 文件路径,DB 不可用或表为空时回退使用
-const templatesJsonPath = path.join(__dirname, '..', 'data', 'reviewTemplates.json');
-
-const loadTemplatesFromJson = () => {
-    if (!fs.existsSync(templatesJsonPath)) return [];
-    return JSON.parse(fs.readFileSync(templatesJsonPath, 'utf8'));
-};
 
 // 从请求 body 构建数据库可写入的模板字段(jsonb 字段需 JSON.stringify)
 const buildTemplatePayload = (body) => ({

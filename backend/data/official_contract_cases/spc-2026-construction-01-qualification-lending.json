@@ -1,0 +1,20 @@
+{
+  "schema": "official_case_v1",
+  "source_id": "official-case:spc:2026-construction-01",
+  "title": "借用资质签订施工合同的效力与管理费处理",
+  "category": "建设工程施工合同纠纷",
+  "case_no": null,
+  "publication_form": "最高人民法院建设工程质量保护典型案例之一",
+  "court": "人民法院",
+  "published_at": "2026-06-29",
+  "verified_at": "2026-08-19",
+  "jurisdiction": "CN",
+  "official_source": "最高人民法院",
+  "official_url": "https://www.court.gov.cn/zixun/xiangqing/504211.html",
+  "applicable_contract_types": ["施工类"],
+  "facts": "实际施工人借用建筑企业资质承揽工程，名义承包人并未实际组织施工，双方另行约定收取管理费。",
+  "issue": "借用资质形成的施工合同及管理费约定是否有效，已经实际发生的管理服务如何处理。",
+  "reasoning": "借用资质规避建筑市场准入和质量安全监管，相关施工合同及单纯出借资质收取管理费的约定无效；但名义承包人确已提供必要管理服务的，可结合实际贡献酌情处理。",
+  "result": "法院否定借用资质及对应管理费约定的效力，并根据实际管理服务情况处理费用。",
+  "review_guidance": "核验承包人资质、实际施工主体和项目管理履职情况；禁止以内部承包、合作等名义掩盖资质出借，并将管理费与可证明的真实服务相区分。"
+}

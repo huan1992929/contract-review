@@ -1,0 +1,20 @@
+{
+  "schema": "official_case_v1",
+  "source_id": "official-case:spc:2026-construction-05",
+  "title": "合同解除退场后质量保证金返还期限",
+  "category": "建设工程施工合同纠纷",
+  "case_no": null,
+  "publication_form": "最高人民法院建设工程质量保护典型案例之五",
+  "court": "人民法院",
+  "published_at": "2026-06-29",
+  "verified_at": "2026-08-19",
+  "jurisdiction": "CN",
+  "official_source": "最高人民法院",
+  "official_url": "https://www.court.gov.cn/zixun/xiangqing/504211.html",
+  "applicable_contract_types": ["施工类"],
+  "facts": "施工合同履行过程中解除，承包人退场，双方对已完工程质量保证金的起算与返还时间发生争议。",
+  "issue": "工程未按原计划整体竣工时，质量保证金返还期限如何起算。",
+  "reasoning": "应结合合同解除、实际退场、已完工程交付及质量责任承担情况确定保证金期限，不能因整体竣工条件已无法成就而无限期占用保证金。",
+  "result": "法院根据退场和已完工程实际情况确定质量保证金返还责任。",
+  "review_guidance": "约定解除退场情形下已完工程验收、缺陷责任期起算、质量保证金比例及返还节点，并明确保修责任不因返还而当然免除。"
+}

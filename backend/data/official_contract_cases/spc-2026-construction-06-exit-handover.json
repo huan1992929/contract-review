@@ -1,0 +1,20 @@
+{
+  "schema": "official_case_v1",
+  "source_id": "official-case:spc:2026-construction-06",
+  "title": "建设工程合同僵局中的先行退场与资料移交",
+  "category": "建设工程施工合同纠纷",
+  "case_no": null,
+  "publication_form": "最高人民法院建设工程质量保护典型案例之六",
+  "court": "人民法院",
+  "published_at": "2026-06-29",
+  "verified_at": "2026-08-19",
+  "jurisdiction": "CN",
+  "official_source": "最高人民法院",
+  "official_url": "https://www.court.gov.cn/zixun/xiangqing/504211.html",
+  "applicable_contract_types": ["施工类"],
+  "facts": "施工合同形成履行僵局，现场和工程资料未及时移交，影响后续施工和项目推进。",
+  "issue": "价款争议未解决前，能否先行处理退场、场地和资料移交。",
+  "reasoning": "继续占有现场和资料会扩大损失的，可以先行解决退场移交事项，价款及违约争议另行处理，以避免工程停滞和损失扩大。",
+  "result": "法院推动先行退场和移交，为后续施工创造条件，并保留当事人另行主张价款等权利。",
+  "review_guidance": "合同应设置解除后的退场期限、资料清单、现场交接、成品保护、设备材料清点和争议款项另行结算机制。"
+}

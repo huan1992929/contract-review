@@ -21,8 +21,79 @@ const path = require('path');
 const { requireRequestUserId, findOwnedContract } = require('../../services/contractAnalysis/auth');
 const { parseJsonField, renderReviewReportHtml, generateDocxBuffer, streamReviewReportPdf } = require('../../services/contractAnalysis/reportRendering');
 const { postOnlyOfficeCommand, buildOnlyOfficeConfig } = require('../../services/contractAnalysis/onlyoffice');
+const {
+    EXPORT_VARIANTS,
+    EXPORT_FORMATS,
+    buildContentDisposition,
+    createDocumentExport,
+} = require('../../services/contractAnalysis/documentExport');
+
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+const tryForceSaveBeforeExport = async (contract) => {
+    if (!contract.document_key || !contract.storage_path) return;
+    try {
+        const previousUpdatedAt = new Date(contract.updated_at || 0).getTime();
+        const result = await postOnlyOfficeCommand({ c: 'forcesave', key: contract.document_key });
+        if (result?.error !== 0) return;
+        // save-callback only updates updated_at after the complete DOCX stream has been
+        // written, so polling the database avoids copying a partially written file.
+        const deadline = Date.now() + 10000;
+        while (Date.now() < deadline) {
+            await sleep(200);
+            const fresh = await db('contracts').where({ id: contract.id }).select('updated_at').first();
+            if (new Date(fresh?.updated_at || 0).getTime() > previousUpdatedAt) return;
+        }
+    } catch (error) {
+        console.warn(`[Export] OnlyOffice force-save skipped for contract ${contract.id}:`, error.message);
+    }
+};
 
 module.exports = function (router) {
+    router.get('/:id/export-document', async (req, res) => {
+        const userId = requireRequestUserId(req, res);
+        if (!userId) return;
+        const variant = String(req.query.variant || 'review').toLowerCase();
+        const requestedFormat = String(req.query.format || 'docx').toLowerCase();
+        const format = requestedFormat === 'word' ? 'docx' : requestedFormat;
+        if (!EXPORT_VARIANTS.has(variant)) {
+            return res.status(400).json({ error: 'variant 仅支持 review 或 final。', code: 'INVALID_EXPORT_VARIANT' });
+        }
+        if (!EXPORT_FORMATS.has(format)) {
+            return res.status(400).json({ error: 'format 仅支持 docx 或 pdf。', code: 'INVALID_EXPORT_FORMAT' });
+        }
+
+        try {
+            const contract = await findOwnedContract(req.params.id, userId);
+            if (!contract) return res.status(404).json({ error: 'Contract not found.' });
+            if (req.query.sync !== 'false') await tryForceSaveBeforeExport(contract);
+            const output = await createDocumentExport({
+                sourcePath: contract.storage_path,
+                originalFilename: contract.original_filename,
+                variant,
+                format,
+            });
+            res.setHeader('Content-Type', output.contentType);
+            res.setHeader('Content-Length', output.buffer.length);
+            res.setHeader('Content-Disposition', buildContentDisposition(output.filename));
+            res.setHeader('Cache-Control', 'no-store');
+            res.setHeader('X-Export-Variant', variant);
+            return res.send(output.buffer);
+        } catch (error) {
+            if (error.code === 'EXPORT_REQUIRES_DOCX') {
+                return res.status(400).json({ error: '仅 DOCX 合同支持审阅版/最终版导出。', code: error.code });
+            }
+            if (error.code === 'LIBREOFFICE_NOT_AVAILABLE'
+                || error.code?.startsWith('ONLYOFFICE_')
+                || error.message === 'PDF_CONVERSION_OUTPUT_MISSING'
+                || error.message === 'PDF_CONVERSION_OUTPUT_INVALID') {
+                return res.status(503).json({ error: 'PDF 转换服务暂不可用，请先导出 Word 文件。', code: error.code || error.message });
+            }
+            console.error(`[ERROR] Failed to export contract document ${req.params.id}:`, error);
+            return res.status(500).json({ error: '合同文件导出失败。' });
+        }
+    });
+
     router.get('/:id/export-report', async (req, res) => {
         const userId = requireRequestUserId(req, res);
         if (!userId) return;
@@ -67,9 +138,9 @@ module.exports = function (router) {
             '',
             ...suggestions.flatMap((item, index) => [
                 `#${index + 1} ${item.title || item.clause || '修改建议'}`,
-                `原文：${item.original_text || item.original_clause || ''}`,
+                `现状条款：${item.current_clause || item.original_text || item.original_clause || ''}`,
                 `建议修改为：${item.suggested_text || item.modification || ''}`,
-                `修改理由：${item.reason || item.rationale || ''}`,
+                `依据：${Array.isArray(item.basis) ? item.basis.map((basis) => [basis.title, basis.clause, basis.content].filter(Boolean).join(' ')).join('；') : (item.basis || item.reason || item.rationale || '当前知识库未检索到直接依据')}`,
                 '',
             ]),
         ];

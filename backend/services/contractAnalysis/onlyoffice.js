@@ -25,8 +25,22 @@ const ONLYOFFICE_URL = process.env.ONLYOFFICE_URL || 'http://localhost:8081';
 const APP_HOST = process.env.APP_HOST;
 const BACKEND_URL_FOR_DOCKER = process.env.BACKEND_URL_FOR_DOCKER || APP_HOST;
 
-const buildOnlyOfficeConfig = (contractRecord, ext = 'docx') => {
+const normalizeOnlyOfficeDownloadUrl = (rawUrl) => {
+    const parsed = new URL(rawUrl);
+    let pathname = parsed.pathname;
+    if (pathname.startsWith('/onlyoffice/')) pathname = pathname.slice('/onlyoffice'.length);
+    if (!pathname.startsWith('/')) pathname = `/${pathname}`;
+
+    const internalBase = new URL(ONLYOFFICE_URL.endsWith('/') ? ONLYOFFICE_URL : `${ONLYOFFICE_URL}/`);
+    internalBase.pathname = pathname;
+    internalBase.search = parsed.search;
+    internalBase.hash = '';
+    return internalBase.toString();
+};
+
+const buildOnlyOfficeConfig = (contractRecord, ext = 'docx', options = {}) => {
     const isPdf = ext === 'pdf';
+    const reviewMode = !isPdf && options.reviewMode === true;
     const fileUrl = `${BACKEND_URL_FOR_DOCKER}/api/uploads/${path.basename(contractRecord.storage_path)}`;
     const callbackUrl = `${BACKEND_URL_FOR_DOCKER}/api/contracts/save-callback`;
     const payload = {
@@ -71,6 +85,17 @@ const buildOnlyOfficeConfig = (contractRecord, ext = 'docx') => {
                 chat: false,
                 feedback: false,
                 goback: false,
+                review: {
+                    hideReviewDisplay: false,
+                    // Track changes remains enabled, but the floating
+                    // "审查更改" navigator interrupts the contract workflow.
+                    // Users can still accept/reject changes inline in the
+                    // document and from the collaboration toolbar.
+                    showReviewChanges: false,
+                    reviewDisplay: 'markup',
+                    trackChanges: reviewMode,
+                    hoverMode: false,
+                },
             },
         },
     };
@@ -100,6 +125,7 @@ module.exports = {
     ONLYOFFICE_URL,
     APP_HOST,
     BACKEND_URL_FOR_DOCKER,
+    normalizeOnlyOfficeDownloadUrl,
     buildOnlyOfficeConfig,
     postOnlyOfficeCommand,
 };

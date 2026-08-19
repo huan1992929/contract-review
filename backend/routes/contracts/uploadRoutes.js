@@ -24,10 +24,11 @@ const { v4: uuidv4 } = require('uuid');
 const unidecode = require('unidecode');
 const db = require('../../database');
 const { ensureUploadUser } = require('../../services/contractAnalysis/knowledge');
-const { buildOnlyOfficeConfig } = require('../../services/contractAnalysis/onlyoffice');
+const { buildOnlyOfficeConfig, normalizeOnlyOfficeDownloadUrl } = require('../../services/contractAnalysis/onlyoffice');
 const { extractTextFromFile } = require('../../services/contractAnalysis/fileExtraction');
 const { getIoInstance } = require('../../services/contractAnalysis/analysisJob');
 const { diffClauses } = require('../../services/incrementalReview');
+const { syncRevisionGroupsFromDocx } = require('../../services/contractAnalysis/docxEdit');
 
 const ALLOWED_EXTENSIONS = ['.docx', '.pdf'];
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -63,7 +64,7 @@ module.exports = function (router) {
         if (!userId) return res.status(400).json({ error: 'User ID is required for upload.' });
 
         try {
-            const contractRecord = await db.transaction(async (trx) => {
+            const uploadResult = await db.transaction(async (trx) => {
                 const safeUserId = await ensureUploadUser(trx, userId);
                 const originalFilenameDecoded = iconv.decode(Buffer.from(req.file.originalname, 'binary'), 'utf-8');
                 const documentKey = uuidv4();
@@ -76,20 +77,31 @@ module.exports = function (router) {
                     status: 'Uploaded',
                 }).returning(['id', 'original_filename', 'document_key', 'storage_path', 'user_id']);
 
-                return newContract || await trx('contracts').where({ document_key: documentKey }).first();
+                const contractRecord = newContract || await trx('contracts').where({ document_key: documentKey }).first();
+                const ext = path.extname(contractRecord.storage_path).toLowerCase().replace('.', '');
+                // Build the editor configuration before the transaction commits. If the
+                // ONLYOFFICE/JWT configuration is incomplete, the contract row is rolled
+                // back instead of leaving an orphaned upload record.
+                return {
+                    contractRecord,
+                    editorConfig: buildOnlyOfficeConfig(contractRecord, ext),
+                };
             });
-            const ext = path.extname(contractRecord.storage_path).toLowerCase().replace('.', '');
             res.status(201).json({
                 message: '文件已上传，编辑器配置已生成。',
-                contractId: contractRecord.id,
-                editorConfig: buildOnlyOfficeConfig(contractRecord, ext),
+                contractId: uploadResult.contractRecord.id,
+                editorConfig: uploadResult.editorConfig,
             });
         } catch (error) {
             if (error.message === 'INVALID_USER_ID') {
                 return res.status(400).json({ error: 'Invalid user ID for upload.' });
             }
             console.error('[ERROR] Error processing upload for OnlyOffice:', error);
-            res.status(500).json({ error: 'Server error during file upload.' });
+            res.status(500).json({
+                error: error.message?.includes('secretOrPrivateKey')
+                    ? '在线文档服务配置不完整，请联系管理员检查 ONLYOFFICE JWT。'
+                    : 'Server error during file upload.',
+            });
         }
     });
 
@@ -105,15 +117,63 @@ module.exports = function (router) {
             if (body.status === 2 || body.status === 6) {
                 const contract = await db('contracts').where({ document_key: body.key }).first();
                 if (contract && body.url) {
-                    const response = await axios.get(body.url, { responseType: 'stream' });
+                    const downloadUrl = normalizeOnlyOfficeDownloadUrl(body.url);
+                    const response = await axios.get(downloadUrl, { responseType: 'stream', timeout: 30000 });
                     const writer = fs.createWriteStream(contract.storage_path);
                     response.data.pipe(writer);
                     await new Promise((resolve, reject) => {
                         writer.on('finish', resolve);
                         writer.on('error', reject);
                     });
-                    await db('contracts').where({ id: contract.id }).update({ updated_at: db.fn.now() });
+                    let revisionSync = { changed: false, results: [], analysis: null };
+                    try {
+                        const analysis = typeof contract.analysis_result === 'string'
+                            ? JSON.parse(contract.analysis_result || '{}')
+                            : (contract.analysis_result || {});
+                        revisionSync = syncRevisionGroupsFromDocx(contract.storage_path, analysis);
+                    } catch (syncError) {
+                        console.warn('[OnlyOffice] revision status sync failed:', syncError.message);
+                    }
+                    const resolvedRevisions = revisionSync.results.filter((item) => ['accepted', 'rejected'].includes(item.status));
+                    const requiresReload = revisionSync.changed && resolvedRevisions.length > 0;
+                    const nextDocumentKey = requiresReload ? uuidv4() : contract.document_key;
+                    if (revisionSync.changed) {
+                        for (const revision of resolvedRevisions) {
+                            const group = revisionSync.analysis.modification_suggestions?.[revision.index]?.revision_group;
+                            if (group) group.document_key = nextDocumentKey;
+                        }
+                    }
+                    const contractUpdate = { updated_at: db.fn.now() };
+                    if (revisionSync.changed) contractUpdate.analysis_result = JSON.stringify(revisionSync.analysis);
+                    if (requiresReload) contractUpdate.document_key = nextDocumentKey;
+                    await db('contracts').where({ id: contract.id }).update(contractUpdate);
                     console.log(`[OnlyOffice] saved file for contract ${contract.id} from status ${body.status}`);
+
+                    if (revisionSync.changed) {
+                        const io = req.app?.get?.('io') || getIoInstance();
+                        const ext = path.extname(contract.storage_path).toLowerCase().replace('.', '');
+                        const editorConfig = requiresReload
+                            ? buildOnlyOfficeConfig({ ...contract, document_key: nextDocumentKey }, ext, { reviewMode: true })
+                            : undefined;
+                        for (const revision of resolvedRevisions) {
+                            const applicationStatus = revision.status === 'accepted' ? 'applied' : 'rejected';
+                            io?.to(`contract-${contract.id}`).emit('suggestion-status-changed', {
+                                contractId: contract.id,
+                                contract_id: contract.id,
+                                suggestionIndex: revision.index,
+                                suggestion_index: revision.index,
+                                applicationStatus,
+                                application_status: applicationStatus,
+                                revisionStatus: revision.status,
+                                revision_status: revision.status,
+                                suggestionId: revision.suggestionId,
+                                suggestion_id: revision.suggestionId,
+                                documentKey: nextDocumentKey,
+                                document_key: nextDocumentKey,
+                                editorConfig,
+                            });
+                        }
+                    }
 
                     // 3.1 增量审查:保存后计算 diff_summary 并推送 contract-modified 事件
                     try {

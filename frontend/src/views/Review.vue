@@ -1,6 +1,6 @@
 <template>
   <div class="review-page w-full h-full flex flex-col">
-    <StepHeader :activeStep="activeStep" />
+    <StepHeader v-if="activeStep !== 2" :activeStep="activeStep" />
     <UploadStep v-if="activeStep === 0" />
     <SettingsStep v-if="activeStep === 1" />
     <ReviewStep v-if="activeStep === 2" />
@@ -51,6 +51,7 @@ export default {
       startStatusPolling: analysis.startStatusPolling,
       stopStatusPolling: analysis.stopStatusPolling,
       stopElapsedTimer: analysis.stopElapsedTimer,
+      applySuggestionStatusPayload: actions.applySuggestionStatusPayload,
     });
     const upload = useReviewUpload(state, {
       setupSocket: socket.setupSocket,
@@ -73,7 +74,7 @@ export default {
     });
 
     const {
-      activeStep, perspective, activeAiTab, selectedTemplateId, saveState,
+      activeStep, perspective, activeAiTab, selectedTemplateId, reviewApplyMode, saveState,
       contract, preAnalysisData, reviewData, selectedReviewPoints, customPurposes,
       allSuggestedReviewPoints, allPotentialParties, allSuggestedCorePurposes,
       cameFromHistory, resetState, socket: socketRef,
@@ -83,7 +84,10 @@ export default {
     const { forceSaveCurrentDocument, stopAutoForceSave } = editor;
     const { stopStatusPolling, stopElapsedTimer } = analysis;
 
-    watch([activeStep, perspective, activeAiTab, selectedTemplateId], saveState);
+    watch([activeStep, perspective, activeAiTab, selectedTemplateId, reviewApplyMode], () => {
+      localStorage.setItem('contract_apply_mode', reviewApplyMode.value);
+      saveState();
+    });
     watch([
       contract, preAnalysisData, reviewData, selectedReviewPoints, customPurposes,
       allSuggestedReviewPoints, allPotentialParties, allSuggestedCorePurposes,

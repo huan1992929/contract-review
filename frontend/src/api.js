@@ -1,12 +1,27 @@
 import axios from 'axios';
-import { getUserId } from './user'; // Assuming user.js is in the same src directory
+import { getUserId, clearAuthenticatedUser } from './user';
+
+const defaultBackendUrl = import.meta.env.PROD ? window.location.origin : 'http://localhost:3000';
+const backendBaseUrl = (import.meta.env.VITE_APP_BACKEND_API_URL || defaultBackendUrl).replace(/\/$/, '');
 
 const apiClient = axios.create({
-    baseURL: (import.meta.env.VITE_APP_BACKEND_API_URL || 'http://localhost:3000') + '/api',
+    baseURL: `${backendBaseUrl}/api`,
+    withCredentials: true,
     headers: {
         'Content-Type': 'application/json'
     }
 });
+
+apiClient.interceptors.response.use(
+    response => response,
+    error => {
+        if (error.response?.status === 401 && !error.config?.skipAuthRedirect) {
+            clearAuthenticatedUser();
+            window.dispatchEvent(new CustomEvent('za-auth-expired'));
+        }
+        return Promise.reject(error);
+    }
+);
 
 // 使用拦截器，在每个请求中自动注入用户ID到请求头
 apiClient.interceptors.request.use(config => {
@@ -61,6 +76,10 @@ export default {
         return apiClient.post(`/contracts/${contractId}/batch-replace-text`, payload);
     },
 
+    appendContractClause(contractId, payload) {
+        return apiClient.post(`/contracts/${contractId}/append-clause`, payload);
+    },
+
     getContractVersions(contractId) {
         return apiClient.get(`/contracts/${contractId}/versions`);
     },
@@ -78,6 +97,13 @@ export default {
 
     downloadPdfAnnotations(contractId) {
         return apiClient.get(`/contracts/${contractId}/pdf-annotations`, { responseType: 'blob' });
+    },
+
+    exportContractDocument(contractId, variant = 'review', format = 'docx') {
+        return apiClient.get(`/contracts/${contractId}/export-document`, {
+            params: { variant, format },
+            responseType: 'blob'
+        });
     },
 
     createContractGroup(payload) {
@@ -111,6 +137,21 @@ export default {
         return apiClient.post(`/contracts/${contractId}/force-save`, payload);
     },
 
+    // Revision acceptance/rejection state owned by the contract service. The
+    // editor callback persists the decision, then broadcasts the same payload
+    // through `suggestion-status-changed` for all open review sessions.
+    updateSuggestionApplicationStatus(contractId, suggestionIndex, status) {
+        return apiClient.post(`/contracts/${contractId}/suggestions/${suggestionIndex}/status`, { status });
+    },
+
+    getSuggestionApplicationStatuses(contractId) {
+        return apiClient.get(`/contracts/${contractId}/suggestion-statuses`);
+    },
+
+    syncContractRevisionStatuses(contractId, payload = {}) {
+        return apiClient.post(`/contracts/${contractId}/revisions/sync`, payload);
+    },
+
     // 3.1 条款级增量审查:对比当前合同与上一版本,仅审查变更条款
     reviewIncremental(contractId, payload = {}) {
         return apiClient.post(`/contracts/${contractId}/review-incremental`, payload);
@@ -118,7 +159,7 @@ export default {
 
     // 4.1 谈判博弈模拟:对修改建议模拟对方立场反向论证
     simulateNegotiation(contractId, payload = {}) {
-        return apiClient.post(`/contracts/${contractId}/simulate-negotiation`, payload);
+        return apiClient.post(`/contracts/${contractId}/simulate-negotiation`, payload, { timeout: 75000 });
     },
 
     // 4.3 行业标准条款库
@@ -194,6 +235,14 @@ export default {
         return apiClient.get('/knowledge/list', { params });
     },
 
+    listKnowledgeCandidates(params = {}) {
+        return apiClient.get('/knowledge/candidates', { params });
+    },
+
+    decideKnowledgeCandidate(payload) {
+        return apiClient.post('/knowledge/candidates/decision', payload);
+    },
+
     importKnowledge(laws) {
         return apiClient.post('/knowledge/import', { laws });
     },
@@ -221,7 +270,7 @@ export default {
     },
 
     getReviewTemplates() {
-        return apiClient.get('/templates');
+        return apiClient.get('/templates', { params: { is_active: true, page: 1, page_size: 100 } });
     }
 };
 
