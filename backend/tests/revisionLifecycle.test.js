@@ -108,15 +108,18 @@ test('clause-numbered prefix anchor replaces the complete clause without duplica
     const suggestion = '7.3 本工程整体质量保修期为竣工验收合格之日起 24 个月。防水工程保修期为 5 年，苗木成活养护期按附件三执行。本合同附件三与本条不一致的，以本条为准。';
     const documentXml = makeDocumentXml(`<w:p><w:r><w:t>${original}</w:t></w:r></w:p>`);
     const resolved = resolveParagraphMatch(documentXml, compositeOriginal, suggestion, [anchor]);
+    const resolvedWithoutExplicitAnchor = resolveParagraphMatch(documentXml, compositeOriginal, suggestion, []);
 
     assert.deepEqual(resolved.range, { start: 0, end: original.length });
     assert.equal(resolved.matchedText, original);
+    assert.deepEqual(resolvedWithoutExplicitAnchor.range, { start: 0, end: original.length });
+    assert.equal(resolvedWithoutExplicitAnchor.matchedText, original);
 
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whole-clause-anchor-'));
     const filePath = path.join(tempDir, 'contract.docx');
     try {
         writeMinimalDocx(filePath, documentXml);
-        const result = replaceTextInDocx(filePath, compositeOriginal, suggestion, [anchor], {
+        const result = replaceTextInDocx(filePath, compositeOriginal, suggestion, [], {
             mode: 'review',
             revisionGroupId: 'whole-clause-group',
             suggestionId: 'suggestion-7.3',

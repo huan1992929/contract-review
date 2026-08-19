@@ -767,8 +767,23 @@ const syncRevisionGroupsFromDocx = (filePath, analysis = {}) => {
     return { analysis, changed, documentChanged, results };
 };
 
+// AI review output can describe one conflict by concatenating a main clause and
+// an attachment excerpt even though they live in separate DOCX paragraphs. If
+// the value starts with a numbered clause, retain the leading clause as a safe
+// structural candidate. The boundary deliberately requires an attachment or
+// another explicitly labelled main-text excerpt so ordinary sentences such as
+// "按附件三执行" are not truncated.
+const primaryClauseCandidate = (text) => {
+    const value = String(text || '').trim();
+    if (!parseClausePrefix(value).clauseNo) return '';
+    const match = value.match(
+        /^(\d+(?:\.\d+)+\s+[\s\S]*?[。；;])\s*(?=(?:附件(?:[一二三四五六七八九十百\d]+)(?:[：:]|第)|正文\s*\d+(?:\.\d+)+))/u,
+    );
+    return match?.[1]?.trim() || '';
+};
+
 const normalizeReplacementCandidates = (originalText, originalCandidates = []) => {
-    const candidates = [originalText, ...originalCandidates]
+    const candidates = [originalText, ...originalCandidates, primaryClauseCandidate(originalText)]
         .map((item) => String(item || '').trim())
         .filter(Boolean);
     const seen = new Set();
