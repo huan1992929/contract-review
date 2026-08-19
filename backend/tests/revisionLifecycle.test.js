@@ -159,7 +159,13 @@ test('reapplying a rejected suggestion removes its stale revision pair before cr
             mode: 'review',
             revisionGroupId: 'fresh-7.3-group',
             suggestionId: 'suggestion-7',
-            previousRevisionGroup: stale.revisionGroup,
+            previousRevisionGroup: {
+                ...stale.revisionGroup,
+                // Simulate an out-of-order ONLYOFFICE save: the database points
+                // at a newer group while the DOCX still contains IDs 4/5.
+                delete_revision_id: 6,
+                insert_revision_id: 7,
+            },
             previousApplicationStatus: 'rejected',
         });
         const xml = new AdmZip(filePath).getEntry('word/document.xml').getData().toString('utf8');

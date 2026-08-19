@@ -535,6 +535,42 @@ const revisionElementMatches = (documentXml, type, revisionId) => {
     return String(documentXml || '').match(revisionElementPattern(type, revisionId)) || [];
 };
 
+const revisionElementText = (elementXml) => (String(elementXml || '')
+    .match(/<w:(?:t|delText)\b[^>]*>[\s\S]*?<\/w:(?:t|delText)>/g) || [])
+    .map((node) => unescapeXmlText(node.replace(/^<w:(?:t|delText)\b[^>]*>|<\/w:(?:t|delText)>$/g, '')))
+    .join('');
+
+/**
+ * Recover a stale revision pair by its exact deleted/inserted text when the
+ * database IDs and the DOCX IDs drift apart after an out-of-order ONLYOFFICE
+ * save. Requiring one delete and one insert in the same paragraph, exact text
+ * equality and a unique document-wide match keeps this fallback narrowly
+ * scoped to the rejected suggestion being re-applied.
+ */
+const findRevisionGroupByContent = (documentXml, revisionGroup = {}) => {
+    const original = normalizedText(revisionGroup.original_text);
+    const suggested = normalizedText(revisionGroup.suggested_text);
+    if (!original || !suggested) return null;
+
+    const paragraphs = String(documentXml || '').match(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g) || [];
+    const candidates = paragraphs.flatMap((paragraph) => {
+        const deletions = paragraph.match(/<w:del\b[^>]*>[\s\S]*?<\/w:del>/g) || [];
+        const insertions = paragraph.match(/<w:ins\b[^>]*>[\s\S]*?<\/w:ins>/g) || [];
+        if (deletions.length !== 1 || insertions.length !== 1) return [];
+        if (normalizedText(revisionElementText(deletions[0])) !== original
+            || normalizedText(revisionElementText(insertions[0])) !== suggested) return [];
+        const deleteId = deletions[0].match(/\bw:id=(?:"([^"]+)"|'([^']+)')/)?.slice(1).find(Boolean);
+        const insertId = insertions[0].match(/\bw:id=(?:"([^"]+)"|'([^']+)')/)?.slice(1).find(Boolean);
+        if (deleteId === undefined || insertId === undefined) return [];
+        return [{
+            ...revisionGroup,
+            delete_revision_id: deleteId,
+            insert_revision_id: insertId,
+        }];
+    });
+    return candidates.length === 1 ? candidates[0] : null;
+};
+
 const unwrapDeletedRevision = (elementXml) => String(elementXml || '')
     .replace(/^<w:del\b[^>]*>/, '')
     .replace(/<\/w:del>$/, '')
@@ -708,6 +744,11 @@ const normalizeRejectedRevisionBeforeReapply = (documentXml, revisionGroup = {},
     if (currentStatus === 'partial') {
         const reconciled = reconcilePartialRevisionGroupInXml(documentXml, revisionGroup);
         if (reconciled.status === 'rejected') return reconciled;
+    }
+    const recoveredGroup = findRevisionGroupByContent(documentXml, revisionGroup);
+    if (recoveredGroup) {
+        const resolved = resolveRevisionGroupInXml(documentXml, recoveredGroup, 'reject');
+        return { xml: resolved.xml, status: resolved.status, changed: resolved.changed };
     }
     const error = new Error('REVISION_GROUP_NOT_PENDING');
     error.currentStatus = currentStatus;
