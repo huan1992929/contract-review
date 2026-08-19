@@ -1,5 +1,5 @@
 // Review.vue OnlyOffice 编辑器操作：搜索/替换/高亮/保存
-import { ref } from 'vue';
+import { nextTick, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import api from '../api';
 
@@ -14,6 +14,8 @@ export function useReviewEditor(state, helpers) {
     const forceSaveDebounceTimer = ref(null);
     const forceSaveInFlight = ref(false);
     const hasPendingEditorChanges = ref(false);
+    let editorReloadWaiter = null;
+    let documentMutationQueue = Promise.resolve();
 
     const getEditor = () => window?.DocEditor?.instances?.docEditorComponent || null;
 
@@ -295,6 +297,15 @@ export function useReviewEditor(state, helpers) {
         }
     };
 
+    const settleEditorReload = (error = null) => {
+        if (!editorReloadWaiter) return;
+        const waiter = editorReloadWaiter;
+        editorReloadWaiter = null;
+        clearTimeout(waiter.timer);
+        if (error) waiter.reject(error);
+        else waiter.resolve(true);
+    };
+
     const reloadEditorConfig = async (nextConfig, message = '正在重新载入修订后的合同...') => {
         if (!nextConfig) return false;
         editorReloading.value = true;
@@ -303,13 +314,28 @@ export function useReviewEditor(state, helpers) {
         hasPendingEditorChanges.value = false;
         stopAutoForceSave();
 
-        // The OnlyOffice Vue wrapper replaces its own host element. Dynamically
-        // unmounting or changing its config therefore lets destroyEditor remove
-        // a DOM node that Vue still owns. A normal page reload is the only stable
-        // hand-off to the new document key: the server result is already saved,
-        // and the fresh page rebuilds both Vue and OnlyOffice from clean DOM.
-        window.setTimeout(() => window.location.reload(), 250);
-        return true;
+        settleEditorReload(new Error('EDITOR_RELOAD_SUPERSEDED'));
+        const ready = new Promise((resolve, reject) => {
+            const timer = window.setTimeout(() => {
+                if (editorReloadWaiter?.timer !== timer) return;
+                editorReloadWaiter = null;
+                reject(new Error('EDITOR_RELOAD_TIMEOUT'));
+            }, 30000);
+            editorReloadWaiter = { resolve, reject, timer };
+        });
+
+        // The isolated editor component owns all DOM below its stable Vue host.
+        // Replacing the config therefore rebuilds only the OnlyOffice instance
+        // and keeps the review page, filters, scroll and history state intact.
+        contract.editorConfig = JSON.parse(JSON.stringify(nextConfig));
+        await nextTick();
+        return ready;
+    };
+
+    const runDocumentMutation = (task) => {
+        const run = documentMutationQueue.then(task, task);
+        documentMutationQueue = run.catch(() => undefined);
+        return run;
     };
 
     const refreshEditorDocument = async () => {
@@ -340,7 +366,7 @@ export function useReviewEditor(state, helpers) {
         }
     };
 
-    const replaceTextInEditorFinal = async (originalText, suggestedText, onSuccess, onFailure, item = {}, options = {}) => {
+    const replaceTextInEditorFinal = (originalText, suggestedText, onSuccess, onFailure, item = {}, options = {}) => runDocumentMutation(async () => {
         try {
             await forceSaveCurrentDocument(true);
             await new Promise((resolve) => setTimeout(resolve, 650));
@@ -354,9 +380,9 @@ export function useReviewEditor(state, helpers) {
             ElMessage.error(message);
             onFailure?.(message);
         }
-    };
+    });
 
-    const appendClauseInEditorFinal = async (title, content, onSuccess, onFailure, options = {}) => {
+    const appendClauseInEditorFinal = (title, content, onSuccess, onFailure, options = {}) => runDocumentMutation(async () => {
         try {
             await forceSaveCurrentDocument(true);
             await new Promise((resolve) => setTimeout(resolve, 650));
@@ -378,7 +404,7 @@ export function useReviewEditor(state, helpers) {
             ElMessage.error(msg);
             onFailure?.(msg);
         }
-    };
+    });
 
     // --- Force save ---
     const forceSaveCurrentDocument = async (silent = true) => {
@@ -450,6 +476,7 @@ export function useReviewEditor(state, helpers) {
             if (isEditorReady.value) {
                 editorReloading.value = false;
                 startAutoForceSave();
+                settleEditorReload();
             }
         }, 300);
     };
@@ -457,6 +484,7 @@ export function useReviewEditor(state, helpers) {
     const onEditorError = (event) => {
         editorReloading.value = false;
         isEditorReady.value = false;
+        settleEditorReload(new Error(event?.data?.errorDescription || 'EDITOR_RELOAD_FAILED'));
         console.error('[OnlyOffice] editor error', event?.data || event);
         ElMessage.error('在线文档加载失败，请刷新后重试。');
     };
@@ -467,6 +495,7 @@ export function useReviewEditor(state, helpers) {
         splitCandidateSentences, clauseBodyCandidate, buildSuggestionCandidates, buildReplacementCandidates, findTextRangeByCandidates,
         ensureEditorReady, previewSuggestion, locateText, replaceTextOnServer,
         markAdoptedText, replaceTextInEditor, reloadEditorConfig, refreshEditorDocument, serverFallback,
+        runDocumentMutation,
         replaceTextInEditorFinal, appendClauseInEditorFinal,
         forceSaveCurrentDocument, scheduleForceSave, stopAutoForceSave, startAutoForceSave,
         onDocumentStateChange, onDocumentReady, onEditorError,

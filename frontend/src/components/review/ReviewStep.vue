@@ -43,17 +43,16 @@
           </button>
         </div>
       </div>
-      <DocumentEditor
+      <OnlyOfficeEditor
         v-if="contract.editorConfig"
-        :key="`${contract.id}-${editorInstanceKey}`"
         id="docEditorComponent"
         ref="docEditorComponent"
         class="flex-grow min-h-0"
         :documentServerUrl="onlyOfficeUrl"
         :config="contract.editorConfig"
-        :events_onDocumentReady="onDocumentReady"
-        :events_onDocumentStateChange="onDocumentStateChange"
-        :events_onError="onEditorError"
+        :onDocumentReady="onDocumentReady"
+        :onDocumentStateChange="onDocumentStateChange"
+        :onError="onEditorError"
       />
       <div v-else-if="editorReloading" class="editor-reload-state flex-grow min-h-0">
         <span class="editor-reload-spinner" aria-hidden="true"></span>
@@ -140,8 +139,8 @@
 <script>
 import { inject } from 'vue';
 import { ElSwitch, ElTag, ElDropdown, ElDropdownMenu, ElDropdownItem } from 'element-plus';
-import { DocumentEditor } from '@onlyoffice/document-editor-vue';
 import StepHeader from './StepHeader.vue';
+import OnlyOfficeEditor from './OnlyOfficeEditor.vue';
 import ZhongAnReviewReport from './ZhongAnReviewReport.vue';
 import ReviewSuggestionsTab from './ReviewSuggestionsTab.vue';
 import ReviewWorkspaceTab from './ReviewWorkspaceTab.vue';
@@ -149,14 +148,14 @@ import ReviewWorkspaceTab from './ReviewWorkspaceTab.vue';
 export default {
   name: 'ReviewStep',
   components: {
-    DocumentEditor, ElSwitch, ElTag, ElDropdown, ElDropdownMenu, ElDropdownItem, StepHeader,
+    OnlyOfficeEditor, ElSwitch, ElTag, ElDropdown, ElDropdownMenu, ElDropdownItem, StepHeader,
     ZhongAnReviewReport, ReviewSuggestionsTab, ReviewWorkspaceTab,
   },
   setup() {
     const review = inject('review');
     const {
       contract, onlyOfficeUrl, onDocumentReady, onDocumentStateChange, onEditorError,
-      editorInstanceKey, editorReloading, editorReloadMessage,
+      editorReloading, editorReloadMessage,
       docEditorComponent, selectedSuggestionPreview,
       prepareFocusedReviewFromSelection,
       showPlainLanguage, reviewApplyMode, exportReport, downloadPdfAnnotations,
@@ -167,7 +166,7 @@ export default {
 
     return {
       contract, onlyOfficeUrl, onDocumentReady, onDocumentStateChange, onEditorError,
-      editorInstanceKey, editorReloading, editorReloadMessage,
+      editorReloading, editorReloadMessage,
       docEditorComponent, selectedSuggestionPreview,
       prepareFocusedReviewFromSelection,
       showPlainLanguage, reviewApplyMode, exportReport, downloadPdfAnnotations,
