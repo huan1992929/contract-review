@@ -19,6 +19,7 @@
 
 const db = require('./database');
 const { ensureVectorStore } = require('./services/vectorStore');
+const { hashPassword, verifyPassword } = require('./services/appAuth');
 
 async function ensureColumn(tableName, columnName, addColumn) {
   const exists = await db.schema.hasColumn(tableName, columnName);
@@ -40,6 +41,44 @@ async function resetAndRebuildDatabase() {
             table.timestamps(true, true);
         });
         console.log('[DB Init] New `users` table created successfully.');
+    }
+
+    await ensureColumn('users', 'username', (table) => table.string('username').unique());
+    await ensureColumn('users', 'password_hash', (table) => table.text('password_hash'));
+    await ensureColumn('users', 'display_name', (table) => table.string('display_name'));
+    await ensureColumn('users', 'role', (table) => table.string('role').defaultTo('reviewer'));
+    await ensureColumn('users', 'is_active', (table) => table.boolean('is_active').notNullable().defaultTo(true));
+    await ensureColumn('users', 'last_login_at', (table) => table.timestamp('last_login_at'));
+
+    const seedUsername = String(process.env.APP_AUTH_USERNAME || '').trim().toLowerCase();
+    const seedPassword = String(process.env.APP_AUTH_PASSWORD || '');
+    if (seedUsername && seedPassword) {
+      const bindUserId = Number(process.env.APP_AUTH_BIND_USER_ID || 0);
+      const existingAccount = await db('users').whereRaw('LOWER(username) = ?', [seedUsername]).first()
+        || (bindUserId > 0 ? await db('users').where({ id: bindUserId }).first() : null);
+      const passwordHash = existingAccount?.password_hash && verifyPassword(seedPassword, existingAccount.password_hash)
+        ? existingAccount.password_hash
+        : hashPassword(seedPassword);
+      if (existingAccount) {
+        await db('users').where({ id: existingAccount.id }).update({
+          username: seedUsername,
+          password_hash: passwordHash,
+          display_name: process.env.APP_AUTH_DISPLAY_NAME || '众安测试账号',
+          role: 'reviewer',
+          is_active: true,
+          updated_at: db.fn.now(),
+        });
+      } else {
+        await db('users').insert({
+          fingerprint_id: `account:${seedUsername}`,
+          username: seedUsername,
+          password_hash: passwordHash,
+          display_name: process.env.APP_AUTH_DISPLAY_NAME || '众安测试账号',
+          role: 'reviewer',
+          is_active: true,
+        });
+      }
+      console.log(`[DB Init] Application login account ready: ${seedUsername}`);
     }
 
     const hasContractsTable = await db.schema.hasTable('contracts');

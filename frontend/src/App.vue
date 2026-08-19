@@ -1,6 +1,6 @@
 <template>
   <div id="app">
-    <header class="app-header">
+    <header v-if="!isLoginPage" class="app-header">
       <router-link to="/" class="brand" aria-label="众安集团合同审核首页">
         <img src="/asserts/zhongan-logo.png" alt="众安集团" />
         <span class="brand-divider" aria-hidden="true"></span>
@@ -17,16 +17,44 @@
           <router-link to="/settings" class="nav-link" active-class="nav-link-active">知识库</router-link>
         </nav>
         <span class="poc-badge"><i></i>内部试用</span>
+        <div v-if="authState.user" class="account-control">
+          <span class="account-avatar">{{ accountInitial }}</span>
+          <span class="account-copy">
+            <strong>{{ authState.user.displayName }}</strong>
+            <small>{{ authState.user.username }}</small>
+          </span>
+          <button type="button" class="logout-button" @click="handleLogout">退出</button>
+        </div>
       </div>
     </header>
     <router-view />
   </div>
 </template>
 
-<script>
-export default {
-  name: 'App',
-};
+<script setup>
+import { computed, onBeforeUnmount, onMounted } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
+import { authState, logout, markSessionExpired } from './auth';
+
+const route = useRoute();
+const router = useRouter();
+const isLoginPage = computed(() => route.name === 'Login');
+const accountInitial = computed(() => String(authState.user?.displayName || authState.user?.username || 'Z').slice(0, 1).toUpperCase());
+
+async function handleLogout() {
+  await logout();
+  await router.replace('/login');
+}
+
+function handleExpired() {
+  markSessionExpired();
+  if (route.name !== 'Login') {
+    router.replace({ name: 'Login', query: { redirect: route.fullPath } });
+  }
+}
+
+onMounted(() => window.addEventListener('za-auth-expired', handleExpired));
+onBeforeUnmount(() => window.removeEventListener('za-auth-expired', handleExpired));
 </script>
 
 <style>
@@ -207,6 +235,57 @@ select:focus-visible,
   box-shadow: 0 0 0 3px rgba(0, 140, 136, .12);
 }
 
+.account-control {
+  height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 5px 4px 4px;
+  border-left: 1px solid #e3e7e3;
+  padding-left: 16px;
+}
+
+.account-avatar {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: white;
+  background: var(--za-teal);
+  font-family: Georgia, serif;
+  font-size: 13px;
+}
+
+.account-copy {
+  display: grid;
+  min-width: 72px;
+  line-height: 1.15;
+}
+
+.account-copy strong {
+  color: var(--za-ink);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.account-copy small {
+  margin-top: 3px;
+  color: #85928f;
+  font-size: 9px;
+}
+
+.logout-button {
+  border: 0;
+  padding: 6px;
+  color: #758582;
+  background: transparent;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.logout-button:hover { color: var(--za-teal); }
+
 .el-button,
 .el-input__wrapper,
 .el-textarea__inner,
@@ -254,5 +333,8 @@ select:focus-visible,
   .poc-badge {
     display: none;
   }
+
+  .account-copy { display: none; }
+  .account-control { margin-left: auto; }
 }
 </style>

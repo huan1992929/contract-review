@@ -35,7 +35,7 @@ export function useReviewSocket(state, deps) {
 
         const defaultBackendUrl = import.meta.env.PROD ? window.location.origin : 'http://localhost:3000';
         const backendUrl = import.meta.env.VITE_APP_BACKEND_API_URL || defaultBackendUrl;
-        socket.value = io(backendUrl);
+        socket.value = io(backendUrl, { withCredentials: true });
 
         socket.value.on('connect', () => {
             console.log('Connected to collaboration server');
@@ -190,6 +190,7 @@ export function useReviewSocket(state, deps) {
         try {
             const response = await fetch(api.getQaStreamUrl(), {
                 method: 'POST',
+                credentials: 'include',
                 headers: {
                     'Content-Type': 'application/json',
                     'X-User-ID': getUserId() || '',

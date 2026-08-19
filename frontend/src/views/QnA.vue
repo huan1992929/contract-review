@@ -150,6 +150,7 @@ export default {
       try {
         const response = await fetch(api.getQaStreamUrl(), {
           method: 'POST',
+          credentials: 'include',
           headers: {
             'Content-Type': 'application/json',
             'X-User-ID': getUserId() || '',

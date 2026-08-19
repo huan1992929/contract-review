@@ -58,6 +58,7 @@ export function useVectorRebuild(onRebuildComplete) {
       if (userId) headers['X-User-ID'] = String(userId);
       const response = await fetch(url, {
         method: 'POST',
+        credentials: 'include',
         headers,
         body: JSON.stringify({}),
       });

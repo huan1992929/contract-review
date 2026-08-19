@@ -1,15 +1,27 @@
 import axios from 'axios';
-import { getUserId } from './user'; // Assuming user.js is in the same src directory
+import { getUserId, clearAuthenticatedUser } from './user';
 
 const defaultBackendUrl = import.meta.env.PROD ? window.location.origin : 'http://localhost:3000';
 const backendBaseUrl = (import.meta.env.VITE_APP_BACKEND_API_URL || defaultBackendUrl).replace(/\/$/, '');
 
 const apiClient = axios.create({
     baseURL: `${backendBaseUrl}/api`,
+    withCredentials: true,
     headers: {
         'Content-Type': 'application/json'
     }
 });
+
+apiClient.interceptors.response.use(
+    response => response,
+    error => {
+        if (error.response?.status === 401 && !error.config?.skipAuthRedirect) {
+            clearAuthenticatedUser();
+            window.dispatchEvent(new CustomEvent('za-auth-expired'));
+        }
+        return Promise.reject(error);
+    }
+);
 
 // 使用拦截器，在每个请求中自动注入用户ID到请求头
 apiClient.interceptors.request.use(config => {

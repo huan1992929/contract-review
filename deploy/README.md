@@ -24,13 +24,18 @@ network already uses that range. Configure a non-overlapping `bip` and
 cp deploy/poc.env.example deploy/poc.env
 openssl rand -hex 24
 openssl rand -hex 32
-openssl passwd -apr1
+openssl rand -hex 32
 ```
 
 Put the first generated value into `POSTGRES_PASSWORD` and the second into
-`ONLYOFFICE_JWT_SECRET` in `deploy/poc.env`. Save the password hash from the
-third command as a line such as `review:<hash>` in
-`deploy/.htpasswd`. Both files are ignored by Git.
+`ONLYOFFICE_JWT_SECRET` in `deploy/poc.env`. Put the third value into
+`AUTH_SESSION_SECRET`. Configure `APP_AUTH_USERNAME`, `APP_AUTH_PASSWORD`, and
+`APP_AUTH_DISPLAY_NAME` for the trial account. `deploy/poc.env` is ignored by
+Git and must not be committed.
+
+When replacing the previous browser-fingerprint identity, set
+`APP_AUTH_BIND_USER_ID` to the existing user ID that owns the trial contracts.
+This keeps the user's contract history after application login is enabled.
 
 Set `APP_HOST` to the browser-visible service URL. Fill in the OpenAI-compatible
 `LLM_*` variables before expecting real AI review output. Set
@@ -55,8 +60,9 @@ is bound to server loopback for diagnostics only. Set `APP_PORT` or
 
 ## POC boundaries
 
-- Nginx basic authentication protects the shared trial endpoint, but it is not
-  a replacement for a production account, role, and audit system.
+- Application session authentication protects the shared trial endpoint. The
+  POC has a single configured trial account and is not a replacement for
+  enterprise SSO, fine-grained roles, or a complete audit system.
 - Only files from the configured knowledge base are used when
   `REVIEW_KB_ONLY_MODE=true`.
 - Use HTTPS, enterprise identity, backups, monitoring, and dependency

@@ -30,6 +30,8 @@ const userRoutes = require('./routes/users');
 const knowledgeRoutes = require('./routes/knowledge');
 const templateRoutes = require('./routes/templates');
 const standardRoutes = require('./routes/standards');
+const authRoutes = require('./routes/auth');
+const { requireSession, parseCookies, verifySession } = require('./services/appAuth');
 const { seedTemplatesIfEmpty } = require('./services/reviewTemplates');
 const { seedLawsFromMarkdown, seedCasesFromJson, syncAllVectorDocuments } = require('./services/vectorStore');
 const db = require('./database');
@@ -39,19 +41,33 @@ const http = require('http');
 const { Server } = require('socket.io');
 
 const app = express();
+// Trust the first reverse proxy so rate limits and audit fields use the client IP.
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: true,
+    credentials: true,
     methods: ["GET", "POST"]
   }
 });
 const port = process.env.PORT || 3000;
 
 // Middleware
-app.use(cors());
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+io.use((socket, next) => {
+  const token = parseCookies(socket.handshake.headers.cookie).za_review_session;
+  if (!token) return next(new Error('AUTH_REQUIRED'));
+  try {
+    socket.authUser = verifySession(token);
+    next();
+  } catch {
+    next(new Error('AUTH_REQUIRED'));
+  }
+});
 
 // Socket.io logic
 io.on('connection', (socket) => {
@@ -95,6 +111,8 @@ app.set('io', io);
 contractRoutes.setIoInstance(io);
 
 // API Routes
+app.use('/api/auth', authRoutes);
+app.use('/api', requireSession);
 app.use('/api/contracts', contractRoutes);
 app.use('/api/qa', qaRoutes);
 app.use('/api/users', userRoutes);
