@@ -125,6 +125,21 @@ export default {
         return apiClient.post(`/contracts/${contractId}/force-save`, payload);
     },
 
+    // Revision acceptance/rejection state owned by the contract service. The
+    // editor callback persists the decision, then broadcasts the same payload
+    // through `suggestion-status-changed` for all open review sessions.
+    updateSuggestionApplicationStatus(contractId, suggestionIndex, status) {
+        return apiClient.post(`/contracts/${contractId}/suggestions/${suggestionIndex}/status`, { status });
+    },
+
+    getSuggestionApplicationStatuses(contractId) {
+        return apiClient.get(`/contracts/${contractId}/suggestion-statuses`);
+    },
+
+    syncContractRevisionStatuses(contractId, payload = {}) {
+        return apiClient.post(`/contracts/${contractId}/revisions/sync`, payload);
+    },
+
     // 3.1 条款级增量审查:对比当前合同与上一版本,仅审查变更条款
     reviewIncremental(contractId, payload = {}) {
         return apiClient.post(`/contracts/${contractId}/review-incremental`, payload);

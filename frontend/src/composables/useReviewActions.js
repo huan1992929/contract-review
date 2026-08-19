@@ -12,7 +12,7 @@ export function useReviewActions(state, editor, helpers) {
         executeEditorMethod, ensureEditorReady, findTextRangeByCandidates,
         buildSuggestionCandidates, buildReplacementCandidates, replaceTextInEditorFinal, previewSuggestion,
         appendClauseInEditorFinal, scheduleForceSave, forceSaveCurrentDocument,
-        reloadEditorConfig,
+        reloadEditorConfig, ensureReviewApplyMode,
     } = editor;
     const { suggestionOriginal, suggestionText, suggestionTitle, isMissingClauseSuggestion } = helpers;
 
@@ -21,6 +21,7 @@ export function useReviewActions(state, editor, helpers) {
     const diffItems = ref([]);
     const diffLoading = ref(false);
     const exportingDocument = ref(false);
+    let lastStatusEditorKey = '';
 
     const addDocComment = async (text, comment, item = {}) => {
         if (!text) {
@@ -41,19 +42,120 @@ export function useReviewActions(state, editor, helpers) {
                 await executeEditorMethod('AddComment', [comment || 'AI 审查建议']);
             });
             scheduleForceSave(300);
-            ElMessage.success('已在文档中添加批注并触发保存。');
         } catch (error) {
             ElMessage.error('添加批注失败：当前 OnlyOffice 未开放批注接口。');
         }
     };
 
-    const isSuggestionApplied = (item) => item?.adopted || item?.application_status === 'pending_review';
+    const normalizeSuggestionApplicationStatus = (value) => {
+        const status = String(value || '').trim().toLowerCase().replace(/-/g, '_');
+        if (['pending_review', 'review_pending', 'pending_confirmation'].includes(status)) return 'pending_review';
+        if (['accepted', 'approved'].includes(status)) return 'accepted';
+        if (['applied', 'effective', 'completed'].includes(status)) return 'applied';
+        if (['rejected', 'declined'].includes(status)) return 'rejected';
+        return 'unresolved';
+    };
+
+    const suggestionApplicationStatus = (item) => {
+        const direct = normalizeSuggestionApplicationStatus(item?.application_status ?? item?.applicationStatus);
+        if (direct !== 'unresolved') return direct;
+        if (item?.rejected === true) return 'rejected';
+        if (item?.review_pending === true) return 'pending_review';
+        if (item?.adopted === true) return 'applied';
+        return 'unresolved';
+    };
+
+    const isSuggestionPendingReview = (item) => suggestionApplicationStatus(item) === 'pending_review';
+    const isSuggestionEffective = (item) => ['accepted', 'applied'].includes(suggestionApplicationStatus(item));
+    // Retain the existing public helper name for batch filtering. "Applied"
+    // here means no further insertion action is available: pending revisions
+    // must first be accepted or rejected inside OnlyOffice.
+    const isSuggestionApplied = (item) => isSuggestionPendingReview(item) || isSuggestionEffective(item);
+
+    const syncEditorConfigFromStatus = (payload = {}) => {
+        const suppliedConfig = payload.editorConfig || payload.editor_config;
+        const nextEditorKey = payload.documentKey || payload.document_key || suppliedConfig?.document?.key;
+        const currentEditorKey = contract.editorConfig?.document?.key;
+        if (!nextEditorKey || nextEditorKey === currentEditorKey || nextEditorKey === lastStatusEditorKey) return;
+
+        lastStatusEditorKey = nextEditorKey;
+        const reload = (editorConfig) => {
+            if (!editorConfig || editorConfig.document?.key !== nextEditorKey) {
+                lastStatusEditorKey = '';
+                return;
+            }
+            reloadEditorConfig(editorConfig, '正在同步审阅确认结果...').catch((error) => {
+                lastStatusEditorKey = '';
+                console.warn('[OnlyOffice] revision status reload failed', error);
+                ElMessage.error('审阅确认结果已保存，但文档刷新失败，请手动刷新页面。');
+            });
+        };
+
+        if (suppliedConfig) {
+            reload(suppliedConfig);
+            return;
+        }
+        api.getFreshEditorConfig(contract.id)
+            .then((response) => reload(response.data?.editorConfig))
+            .catch((error) => {
+                lastStatusEditorKey = '';
+                console.warn('[OnlyOffice] fresh editor config after status sync failed', error);
+                ElMessage.error('审阅状态已同步，但未能刷新在线文档，请手动刷新页面。');
+            });
+    };
+
+    const applySuggestionStatusPayload = (payload = {}) => {
+        const entries = payload.suggestions || payload.statuses;
+        if (Array.isArray(entries)) {
+            entries.forEach((entry) => applySuggestionStatusPayload(entry));
+            syncEditorConfigFromStatus(payload);
+            return;
+        }
+        const suggestionIndex = Number(payload.suggestionIndex ?? payload.suggestion_index ?? payload.index);
+        if (!Number.isInteger(suggestionIndex)) return;
+        const item = reviewData.modification_suggestions?.[suggestionIndex];
+        if (!item) return;
+        const status = normalizeSuggestionApplicationStatus(
+            payload.applicationStatus ?? payload.application_status
+                ?? payload.revisionStatus ?? payload.revision_status ?? payload.status,
+        );
+        item.application_status = status;
+        item.review_pending = status === 'pending_review';
+        item.adopted = ['accepted', 'applied'].includes(status);
+        item.rejected = status === 'rejected';
+        if (payload.documentKey || payload.document_key) {
+            item.applied_document_key = payload.documentKey || payload.document_key;
+        }
+        if (payload.updatedAt || payload.updated_at) {
+            item.application_status_updated_at = payload.updatedAt || payload.updated_at;
+        }
+        syncEditorConfigFromStatus(payload);
+    };
+
+    const setSuggestionReviewDecision = async (item, suggestionIndex, decision) => {
+        const status = decision === 'accepted' ? 'accepted' : (decision === 'rejected' ? 'rejected' : 'unresolved');
+        try {
+            const response = await api.updateSuggestionApplicationStatus(contract.id, suggestionIndex, status);
+            applySuggestionStatusPayload({ suggestionIndex, status, ...(response.data || {}) });
+            return true;
+        } catch (error) {
+            ElMessage.error(error.response?.data?.error || '修订状态同步失败，请稍后重试。');
+            return false;
+        }
+    };
 
     const applyResultToSuggestion = (item, originalText, suggestedText, result = {}) => {
-        const pendingReview = result.applicationStatus === 'pending_review' || reviewApplyMode.value === 'review';
-        item.application_status = pendingReview ? 'pending_review' : 'applied';
+        const responseStatus = normalizeSuggestionApplicationStatus(result.applicationStatus ?? result.application_status);
+        const applicationStatus = responseStatus !== 'unresolved'
+            ? responseStatus
+            : (reviewApplyMode.value === 'review' ? 'pending_review' : 'applied');
+        const pendingReview = applicationStatus === 'pending_review';
+        item.application_status = applicationStatus;
         item.review_pending = pendingReview;
-        item.adopted = !pendingReview;
+        item.adopted = ['accepted', 'applied'].includes(applicationStatus);
+        item.rejected = false;
+        const revisionGroup = result.revisionGroup || result.revision_group;
+        if (revisionGroup) item.revision_group = revisionGroup;
         item.adopted_original = originalText || '合同未约定';
         adoptedHighlights.value[suggestionTitle(item, 0)] = originalText || suggestedText;
         if (!selectedSuggestionPreview.value) {
@@ -101,6 +203,7 @@ export function useReviewActions(state, editor, helpers) {
                     currentClause: originalText || '',
                     targetClauseNo: item.target_clause_no || item.targetClauseNo || '',
                     targetHeading: item.target_heading || item.targetHeading || item.parent_clause || item.target_section || item.section_title || '',
+                    suggestionId: item.revision_group?.suggestion_id || item.suggestion_id || item.id || '',
                 },
             );
             return;
@@ -110,6 +213,7 @@ export function useReviewActions(state, editor, helpers) {
         await replaceTextInEditorFinal(originalText, suggestedText, markAdopted, markFailed, item, {
             mode: reviewApplyMode.value,
             suggestionIndex,
+            suggestionId: item.revision_group?.suggestion_id || item.suggestion_id || item.id || '',
         });
     };
 
@@ -132,6 +236,7 @@ export function useReviewActions(state, editor, helpers) {
         }
         batchApplying.value = true;
         try {
+            if (!await ensureReviewApplyMode()) return;
             const selectedItems = indexes.map((index) => ({
                 index,
                 item: reviewData.modification_suggestions[index],
@@ -155,6 +260,7 @@ export function useReviewActions(state, editor, helpers) {
             if (replacementItems.length) {
                 const suggestions = replacementItems.map(({ item, index }) => ({
                     suggestionIndex: index,
+                    suggestionId: item.revision_group?.suggestion_id || item.suggestion_id || item.id || '',
                     title: suggestionTitle(item, 0),
                     originalText: suggestionOriginal(item),
                     suggestedText: suggestionText(item),
@@ -173,7 +279,10 @@ export function useReviewActions(state, editor, helpers) {
                 (response.data.results || []).forEach((result) => {
                     if (result.ok) {
                         const target = replacementItems[result.index].item;
-                        applyResultToSuggestion(target, suggestionOriginal(target), suggestionText(target), response.data);
+                        applyResultToSuggestion(target, suggestionOriginal(target), suggestionText(target), {
+                            ...result,
+                            applicationStatus: response.data.applicationStatus || response.data.application_status,
+                        });
                     }
                 });
             }
@@ -185,6 +294,7 @@ export function useReviewActions(state, editor, helpers) {
                         content: suggestionText(item),
                         mode: reviewApplyMode.value,
                         suggestionIndex: index,
+                        suggestionId: item.revision_group?.suggestion_id || item.suggestion_id || item.id || '',
                         anchorHint: item.anchor_hint || item.anchorHint || '',
                         currentClause: suggestionOriginal(item) || '',
                         targetClauseNo: item.target_clause_no || item.targetClauseNo || '',
@@ -282,7 +392,9 @@ export function useReviewActions(state, editor, helpers) {
 
     return {
         selectedSuggestionIndexes, batchApplying, diffItems, diffLoading, exportingDocument,
-        addDocComment, adoptSuggestion, isSuggestionApplied, downloadBlob,
+        addDocComment, adoptSuggestion, isSuggestionApplied, isSuggestionPendingReview, isSuggestionEffective,
+        normalizeSuggestionApplicationStatus, suggestionApplicationStatus,
+        applySuggestionStatusPayload, setSuggestionReviewDecision, downloadBlob,
         applySelectedSuggestions, loadLatestDiff, exportReport, downloadPdfAnnotations, exportContractDocument,
     };
 }

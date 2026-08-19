@@ -3,6 +3,8 @@
  * @brief 条款感知的 DOCX 文本定位、直接编辑与审阅修订
  */
 const AdmZip = require('adm-zip');
+const fs = require('fs');
+const { randomUUID } = require('crypto');
 
 const escapeXmlText = (text) => String(text || '')
     .replace(/&/g, '&amp;')
@@ -472,6 +474,17 @@ const makeRun = (text, runProperties = '', textTag = 'w:t') => {
 };
 
 const replaceTextWithRevision = (paragraphXml, range, replacement, options = {}) => {
+    return replaceTextWithRevisionGroup(paragraphXml, range, replacement, options).xml;
+};
+
+/**
+ * Build one logical AI suggestion as a stable Word revision group.
+ *
+ * Word itself stores a replacement as two independent revisions (w:del + w:ins).
+ * The returned metadata is persisted with the review suggestion so the server can
+ * later accept/reject both halves as one atomic operation.
+ */
+const replaceTextWithRevisionGroup = (paragraphXml, range, replacement, options = {}) => {
     if (/<w:(?:hyperlink|fldChar|instrText|bookmarkStart|commentRangeStart|ins|del)\b/.test(paragraphXml)) {
         throw new Error('DOCX_COMPLEX_PARAGRAPH_UNSUPPORTED');
     }
@@ -485,13 +498,273 @@ const replaceTextWithRevision = (paragraphXml, range, replacement, options = {})
     const id = Number(options.revisionId || 1);
     const author = escapeXmlAttr(options.author || 'AI审查');
     const date = escapeXmlAttr(options.date || new Date().toISOString());
+    const groupId = String(options.revisionGroupId || `revision-${id}-${id + 1}`);
+    const suggestionId = String(options.suggestionId || groupId);
     const deleted = oldText
         ? `<w:del w:id="${id}" w:author="${author}" w:date="${date}">${makeRun(oldText, runProperties, 'w:delText')}</w:del>`
         : '';
     const inserted = replacement
         ? `<w:ins w:id="${id + 1}" w:author="${author}" w:date="${date}">${makeRun(replacement, runProperties)}</w:ins>`
         : '';
-    return `${startTag}${pPr}${makeRun(before, runProperties)}${deleted}${inserted}${makeRun(after, runProperties)}</w:p>`;
+    return {
+        xml: `${startTag}${pPr}${makeRun(before, runProperties)}${deleted}${inserted}${makeRun(after, runProperties)}</w:p>`,
+        revisionGroup: {
+            group_id: groupId,
+            suggestion_id: suggestionId,
+            delete_revision_id: oldText ? id : null,
+            insert_revision_id: replacement ? id + 1 : null,
+            original_text: oldText,
+            suggested_text: String(replacement || ''),
+            paragraph_prefix: before,
+            paragraph_suffix: after,
+            status: 'pending',
+            created_at: options.date || new Date().toISOString(),
+        },
+    };
+};
+
+const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const revisionElementPattern = (type, revisionId) => new RegExp(
+    `<w:${type}\\b[^>]*\\bw:id=(?:"${escapeRegExp(revisionId)}"|'${escapeRegExp(revisionId)}')[^>]*>[\\s\\S]*?<\\/w:${type}>`,
+    'g',
+);
+
+const revisionElementMatches = (documentXml, type, revisionId) => {
+    if (revisionId === undefined || revisionId === null || revisionId === '') return [];
+    return String(documentXml || '').match(revisionElementPattern(type, revisionId)) || [];
+};
+
+const unwrapDeletedRevision = (elementXml) => String(elementXml || '')
+    .replace(/^<w:del\b[^>]*>/, '')
+    .replace(/<\/w:del>$/, '')
+    .replace(/<w:delText\b/g, '<w:t')
+    .replace(/<\/w:delText>/g, '</w:t>');
+
+const unwrapInsertedRevision = (elementXml) => String(elementXml || '')
+    .replace(/^<w:ins\b[^>]*>/, '')
+    .replace(/<\/w:ins>$/, '');
+
+const normalizedContains = (haystack, needle) => {
+    const normalizedNeedle = normalizeForDocxMatch(needle).value;
+    if (!normalizedNeedle) return false;
+    return normalizeForDocxMatch(haystack).value.includes(normalizedNeedle);
+};
+
+const normalizedText = (value) => normalizeForDocxMatch(value).value;
+
+const visibleParagraphTexts = (documentXml) => {
+    const paragraphs = String(documentXml || '').match(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g) || [];
+    return paragraphs.map((paragraph) => paragraphText(paragraph));
+};
+
+const containsIndependentOriginal = (visibleText, originalText, suggestedText) => {
+    const visible = normalizedText(visibleText);
+    const original = normalizedText(originalText);
+    const suggested = normalizedText(suggestedText);
+    if (!original) return false;
+    if (!suggested) return visible.includes(original);
+    const suggestionIndex = visible.indexOf(suggested);
+    if (suggestionIndex < 0) return visible.includes(original);
+    const outsideSuggestion = `${visible.slice(0, suggestionIndex)}${visible.slice(suggestionIndex + suggested.length)}`;
+    return outsideSuggestion.includes(original);
+};
+
+/**
+ * Best-effort status detection after a document was edited inside ONLYOFFICE.
+ * Pending is authoritative while the persisted revision IDs still exist. Once
+ * Word removes the wrappers, visible text is compared with the exact text that
+ * was written for this suggestion.
+ */
+const detectRevisionGroupStatusInXml = (documentXml, revisionGroup = {}) => {
+    const expectsDelete = revisionGroup.delete_revision_id !== undefined
+        && revisionGroup.delete_revision_id !== null;
+    const expectsInsert = revisionGroup.insert_revision_id !== undefined
+        && revisionGroup.insert_revision_id !== null;
+    const hasDelete = expectsDelete
+        ? revisionElementMatches(documentXml, 'del', revisionGroup.delete_revision_id).length === 1
+        : false;
+    const hasInsert = expectsInsert
+        ? revisionElementMatches(documentXml, 'ins', revisionGroup.insert_revision_id).length === 1
+        : false;
+    const expectedCount = Number(expectsDelete) + Number(expectsInsert);
+    const presentCount = Number(hasDelete) + Number(hasInsert);
+    if (expectedCount > 0 && presentCount === expectedCount) return 'pending';
+    if (presentCount > 0) return 'partial';
+
+    const paragraphs = visibleParagraphTexts(documentXml);
+    const acceptedParagraph = normalizedText(
+        `${revisionGroup.paragraph_prefix || ''}${revisionGroup.suggested_text || ''}${revisionGroup.paragraph_suffix || ''}`,
+    );
+    const rejectedParagraph = normalizedText(
+        `${revisionGroup.paragraph_prefix || ''}${revisionGroup.original_text || ''}${revisionGroup.paragraph_suffix || ''}`,
+    );
+    if (acceptedParagraph && paragraphs.some((text) => normalizedText(text) === acceptedParagraph)) return 'accepted';
+    if (rejectedParagraph && paragraphs.some((text) => normalizedText(text) === rejectedParagraph)) return 'rejected';
+
+    const visibleText = paragraphs.join('\n');
+    const hasOriginal = normalizedContains(visibleText, revisionGroup.original_text);
+    const hasSuggested = normalizedContains(visibleText, revisionGroup.suggested_text);
+    if (revisionGroup.suggested_text && hasSuggested
+        && !containsIndependentOriginal(visibleText, revisionGroup.original_text, revisionGroup.suggested_text)) return 'accepted';
+    if (revisionGroup.original_text && hasOriginal && !hasSuggested) return 'rejected';
+    if (!revisionGroup.suggested_text && !hasOriginal) return 'accepted';
+    if (!revisionGroup.original_text && !hasSuggested) return 'rejected';
+    return 'resolved_unknown';
+};
+
+/**
+ * Resolve both halves of one replacement revision in-memory. The caller writes
+ * the returned XML to a temporary DOCX and renames it, making the file update
+ * atomic and preventing half-accepted replacement suggestions.
+ */
+const resolveRevisionGroupInXml = (documentXml, revisionGroup = {}, resolution) => {
+    if (!['accept', 'reject'].includes(resolution)) throw new Error('INVALID_REVISION_RESOLUTION');
+    const expectedStatus = resolution === 'accept' ? 'accepted' : 'rejected';
+    const currentStatus = detectRevisionGroupStatusInXml(documentXml, revisionGroup);
+    if (currentStatus !== 'pending') {
+        if (currentStatus === expectedStatus) {
+            return { xml: documentXml, status: currentStatus, changed: false, alreadyResolved: true };
+        }
+        const error = new Error('REVISION_GROUP_NOT_PENDING');
+        error.currentStatus = currentStatus;
+        throw error;
+    }
+
+    const deleteMatches = revisionElementMatches(documentXml, 'del', revisionGroup.delete_revision_id);
+    const insertMatches = revisionElementMatches(documentXml, 'ins', revisionGroup.insert_revision_id);
+    if (deleteMatches.length > 1 || insertMatches.length > 1) throw new Error('REVISION_GROUP_AMBIGUOUS');
+
+    let xml = String(documentXml);
+    if (resolution === 'accept') {
+        if (deleteMatches[0]) xml = xml.replace(deleteMatches[0], '');
+        if (insertMatches[0]) xml = xml.replace(insertMatches[0], unwrapInsertedRevision(insertMatches[0]));
+    } else {
+        if (deleteMatches[0]) xml = xml.replace(deleteMatches[0], unwrapDeletedRevision(deleteMatches[0]));
+        if (insertMatches[0]) xml = xml.replace(insertMatches[0], '');
+    }
+    return { xml, status: expectedStatus, changed: true, alreadyResolved: false };
+};
+
+const revisionParagraphContext = (documentXml, revisionElement) => {
+    if (!revisionElement) return String(documentXml || '');
+    const elementStart = String(documentXml).indexOf(revisionElement);
+    if (elementStart < 0) return String(documentXml || '');
+    const paragraphStart = Math.max(
+        String(documentXml).lastIndexOf('<w:p>', elementStart),
+        String(documentXml).lastIndexOf('<w:p ', elementStart),
+    );
+    const paragraphEnd = String(documentXml).indexOf('</w:p>', elementStart);
+    if (paragraphStart < 0 || paragraphEnd < 0) return String(documentXml || '');
+    return String(documentXml).slice(paragraphStart, paragraphEnd + 6);
+};
+
+/**
+ * ONLYOFFICE can save a replacement after the user resolves only one half of
+ * its delete/insert pair. Infer the user's intent from the ordinary text next
+ * to the surviving wrapper, then normalize the whole logical suggestion.
+ */
+const reconcilePartialRevisionGroupInXml = (documentXml, revisionGroup = {}) => {
+    const deleteMatch = revisionElementMatches(documentXml, 'del', revisionGroup.delete_revision_id)[0] || '';
+    const insertMatch = revisionElementMatches(documentXml, 'ins', revisionGroup.insert_revision_id)[0] || '';
+    if (Boolean(deleteMatch) === Boolean(insertMatch)) {
+        return { xml: documentXml, status: detectRevisionGroupStatusInXml(documentXml, revisionGroup), changed: false };
+    }
+
+    let xml = String(documentXml);
+    if (deleteMatch) {
+        const visibleContext = paragraphText(revisionParagraphContext(xml, deleteMatch));
+        const insertionWasAccepted = normalizedContains(visibleContext, revisionGroup.suggested_text);
+        xml = xml.replace(deleteMatch, insertionWasAccepted ? '' : unwrapDeletedRevision(deleteMatch));
+        return { xml, status: insertionWasAccepted ? 'accepted' : 'rejected', changed: true };
+    }
+
+    const insertContext = revisionParagraphContext(xml, insertMatch);
+    const visibleContext = paragraphText(insertContext.replace(insertMatch, ''));
+    const deletionWasRejected = normalizedContains(visibleContext, revisionGroup.original_text);
+    xml = xml.replace(insertMatch, deletionWasRejected ? '' : unwrapInsertedRevision(insertMatch));
+    return { xml, status: deletionWasRejected ? 'rejected' : 'accepted', changed: true };
+};
+
+const resolveRevisionGroupInDocx = (filePath, revisionGroup, resolution) => {
+    const zip = new AdmZip(filePath);
+    const entry = zip.getEntry('word/document.xml');
+    if (!entry) throw new Error('DOCX_DOCUMENT_XML_NOT_FOUND');
+    const result = resolveRevisionGroupInXml(entry.getData().toString('utf8'), revisionGroup, resolution);
+    if (result.changed) {
+        zip.updateFile('word/document.xml', Buffer.from(result.xml, 'utf8'));
+        zip.writeZip(filePath);
+    }
+    return {
+        status: result.status,
+        changed: result.changed,
+        alreadyResolved: result.alreadyResolved,
+        groupId: revisionGroup?.group_id || '',
+        suggestionId: revisionGroup?.suggestion_id || '',
+    };
+};
+
+const detectRevisionGroupStatusInDocx = (filePath, revisionGroup) => {
+    const zip = new AdmZip(filePath);
+    const entry = zip.getEntry('word/document.xml');
+    if (!entry) throw new Error('DOCX_DOCUMENT_XML_NOT_FOUND');
+    return detectRevisionGroupStatusInXml(entry.getData().toString('utf8'), revisionGroup);
+};
+
+const syncRevisionGroupsFromDocx = (filePath, analysis = {}) => {
+    const zip = new AdmZip(filePath);
+    const entry = zip.getEntry('word/document.xml');
+    if (!entry) throw new Error('DOCX_DOCUMENT_XML_NOT_FOUND');
+    let documentXml = entry.getData().toString('utf8');
+    const suggestions = Array.isArray(analysis.modification_suggestions)
+        ? analysis.modification_suggestions
+        : [];
+    const results = [];
+    let changed = false;
+    let documentChanged = false;
+    for (let index = 0; index < suggestions.length; index += 1) {
+        const item = suggestions[index];
+        const group = item?.revision_group;
+        if (!group || !['pending', 'partial', 'pending_review'].includes(group.status || 'pending')) continue;
+        let status = detectRevisionGroupStatusInXml(documentXml, group);
+        if (status === 'partial') {
+            const reconciled = reconcilePartialRevisionGroupInXml(documentXml, group);
+            documentXml = reconciled.xml;
+            status = reconciled.status;
+            documentChanged = documentChanged || reconciled.changed;
+        }
+        results.push({ index, suggestionId: group.suggestion_id || '', groupId: group.group_id || '', status });
+        if (status === group.status || (status === 'pending' && group.status === 'pending_review')) continue;
+        group.status = status;
+        group.synced_at = new Date().toISOString();
+        if (Array.isArray(analysis.revision_groups)) {
+            const registered = analysis.revision_groups.find((candidate) => candidate?.group_id === group.group_id);
+            if (registered) Object.assign(registered, group);
+        }
+        if (status === 'accepted') {
+            item.application_status = 'applied';
+            item.review_pending = false;
+            item.adopted = true;
+            item.resolved_at = group.synced_at;
+        } else if (status === 'rejected') {
+            item.application_status = 'rejected';
+            item.review_pending = false;
+            item.adopted = false;
+            item.resolved_at = group.synced_at;
+        }
+        changed = true;
+    }
+    if (documentChanged) {
+        zip.updateFile('word/document.xml', Buffer.from(documentXml, 'utf8'));
+        const tempPath = `${filePath}.revision-sync-${randomUUID()}.tmp`;
+        try {
+            zip.writeZip(tempPath);
+            fs.renameSync(tempPath, filePath);
+        } finally {
+            if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        }
+    }
+    return { analysis, changed, documentChanged, results };
 };
 
 const normalizeReplacementCandidates = (originalText, originalCandidates = []) => {
@@ -561,13 +834,19 @@ const replaceTextInDocx = (filePath, originalText, suggestedText, originalCandid
     const documentXml = entry.getData().toString('utf8');
     const resolved = resolveParagraphMatch(documentXml, originalText, suggestedText, originalCandidates);
     let paragraphXml;
+    let revisionGroup = null;
     if (options.mode === 'review') {
         const maxRevisionId = Math.max(0, ...(documentXml.match(/w:id="(\d+)"/g) || [])
             .map((value) => Number(value.match(/\d+/)?.[0] || 0)));
-        paragraphXml = replaceTextWithRevision(resolved.paragraph.xml, resolved.range, resolved.replacement, {
+        const revisionResult = replaceTextWithRevisionGroup(resolved.paragraph.xml, resolved.range, resolved.replacement, {
             revisionId: maxRevisionId + 1,
             author: options.author,
+            date: options.date,
+            revisionGroupId: options.revisionGroupId,
+            suggestionId: options.suggestionId,
         });
+        paragraphXml = revisionResult.xml;
+        revisionGroup = revisionResult.revisionGroup;
     } else {
         const result = replaceTextInXmlRuns(resolved.paragraph.xml, resolved.matchedText, resolved.replacement);
         if (!result.replaced) throw new Error('DOCX_EXACT_TEXT_NOT_FOUND');
@@ -583,6 +862,7 @@ const replaceTextInDocx = (filePath, originalText, suggestedText, originalCandid
         replacementText: resolved.replacement,
         strategy: resolved.strategy,
         mode: options.mode === 'review' ? 'review' : 'edit',
+        revisionGroup,
     };
 };
 
@@ -597,6 +877,13 @@ module.exports = {
     ensureClauseNumber,
     replaceTextInXmlRuns,
     replaceTextWithRevision,
+    replaceTextWithRevisionGroup,
+    detectRevisionGroupStatusInXml,
+    detectRevisionGroupStatusInDocx,
+    resolveRevisionGroupInXml,
+    resolveRevisionGroupInDocx,
+    reconcilePartialRevisionGroupInXml,
+    syncRevisionGroupsFromDocx,
     normalizeReplacementCandidates,
     resolveParagraphMatch,
     replaceTextInDocx,

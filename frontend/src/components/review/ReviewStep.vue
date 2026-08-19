@@ -26,16 +26,24 @@
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-          <div class="apply-mode-switch" aria-label="AI 建议采纳方式">
+          <div
+            :class="['apply-mode-switch', editorModeSyncing ? 'is-syncing' : '']"
+            aria-label="AI 建议采纳方式"
+            :aria-busy="editorModeSyncing"
+          >
             <button
-              @click="reviewApplyMode = 'review'"
+              @click="setReviewApplyMode('review')"
+              :disabled="editorModeSyncing || !isEditorReady"
               :class="reviewApplyMode === 'review' ? 'is-active' : ''"
-              title="生成可接受或拒绝的修订记录"
+              :aria-pressed="reviewApplyMode === 'review'"
+              :title="editorModeSyncError ? '编辑器模式尚未同步，请重试' : '生成可接受或拒绝的修订记录'"
             >审阅修订</button>
             <button
-              @click="reviewApplyMode = 'edit'"
+              @click="setReviewApplyMode('edit')"
+              :disabled="editorModeSyncing || !isEditorReady"
               :class="reviewApplyMode === 'edit' ? 'is-active' : ''"
-              title="直接替换合同正文"
+              :aria-pressed="reviewApplyMode === 'edit'"
+              :title="editorModeSyncError ? '编辑器模式尚未同步，请重试' : '直接替换合同正文'"
             >直接编辑</button>
           </div>
           <button @click="prepareFocusedReviewFromSelection" class="px-3 py-1.5 text-xs font-medium text-white bg-primary rounded hover:bg-primary-dark">
@@ -156,6 +164,7 @@ export default {
     const {
       contract, onlyOfficeUrl, onDocumentReady, onDocumentStateChange, onEditorError,
       editorReloading, editorReloadMessage,
+      isEditorReady, editorModeSyncing, editorModeSyncError, setReviewApplyMode,
       docEditorComponent, selectedSuggestionPreview,
       prepareFocusedReviewFromSelection,
       showPlainLanguage, reviewApplyMode, exportReport, downloadPdfAnnotations,
@@ -167,6 +176,7 @@ export default {
     return {
       contract, onlyOfficeUrl, onDocumentReady, onDocumentStateChange, onEditorError,
       editorReloading, editorReloadMessage,
+      isEditorReady, editorModeSyncing, editorModeSyncError, setReviewApplyMode,
       docEditorComponent, selectedSuggestionPreview,
       prepareFocusedReviewFromSelection,
       showPlainLanguage, reviewApplyMode, exportReport, downloadPdfAnnotations,
@@ -202,6 +212,16 @@ export default {
 .apply-mode-switch button.is-active {
   color: #fff;
   background: #008f87;
+}
+
+.apply-mode-switch button:disabled {
+  cursor: wait;
+  opacity: .56;
+}
+
+.apply-mode-switch.is-syncing {
+  border-color: #82bbb4;
+  box-shadow: 0 0 0 2px rgba(0, 143, 135, .08);
 }
 
 .contract-export-button {

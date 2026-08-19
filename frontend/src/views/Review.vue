@@ -51,6 +51,7 @@ export default {
       startStatusPolling: analysis.startStatusPolling,
       stopStatusPolling: analysis.stopStatusPolling,
       stopElapsedTimer: analysis.stopElapsedTimer,
+      applySuggestionStatusPayload: actions.applySuggestionStatusPayload,
     });
     const upload = useReviewUpload(state, {
       setupSocket: socket.setupSocket,

@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const AdmZip = require('adm-zip');
+const mammoth = require('mammoth');
 const {
     acceptTrackedChangesInXml,
     acceptAllTrackedChanges,
@@ -13,6 +14,53 @@ const {
     findLibreOfficeBinary,
     convertDocxToPdfWithOnlyOffice,
 } = require('../services/contractAnalysis/documentExport');
+const {
+    detectRevisionGroupStatusInDocx,
+} = require('../services/contractAnalysis/docxEdit');
+
+const REVISION_GROUP = {
+    group_id: 'suggestion-1',
+    suggestion_id: 'suggestion-1',
+    delete_revision_id: 41,
+    insert_revision_id: 42,
+    original_text: '原条款内容',
+    suggested_text: '建议条款内容',
+};
+
+const documentXmlForState = (state) => {
+    const clauseBody = state === 'pending'
+        ? '<w:del w:id="41" w:author="AI审查"><w:r><w:delText>原条款内容</w:delText></w:r></w:del><w:ins w:id="42" w:author="AI审查"><w:r><w:t>建议条款内容</w:t></w:r></w:ins>'
+        : `<w:r><w:t>${state === 'accepted' ? '建议条款内容' : '原条款内容'}</w:t></w:r>`;
+    return `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="ContractClause"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="7"/></w:numPr></w:pPr><w:r><w:t xml:space="preserve">1.2 </w:t></w:r>${clauseBody}</w:p><w:sectPr/></w:body></w:document>`;
+};
+
+const makeRevisionStateDocx = (filePath, state) => {
+    const zip = new AdmZip();
+    zip.addFile('[Content_Types].xml', Buffer.from('<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>'));
+    zip.addFile('_rels/.rels', Buffer.from('<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'));
+    zip.addFile('word/_rels/document.xml.rels', Buffer.from('<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>'));
+    zip.addFile('word/document.xml', Buffer.from(documentXmlForState(state)));
+    zip.addFile('word/styles.xml', Buffer.from('<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="Normal"/><w:style w:type="paragraph" w:styleId="ContractClause"><w:name w:val="Contract Clause"/><w:basedOn w:val="Normal"/></w:style></w:styles>'));
+    zip.addFile('word/numbering.xml', Buffer.from('<?xml version="1.0"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="7"><w:abstractNumId w:val="7"/></w:num></w:numbering>'));
+    zip.addFile('word/settings.xml', Buffer.from(`<?xml version="1.0"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">${state === 'pending' ? '<w:trackRevisions/>' : ''}</w:settings>`));
+    zip.writeZip(filePath);
+};
+
+const writeExportBuffer = async (directory, name, buffer) => {
+    const filePath = path.join(directory, name);
+    await fs.promises.writeFile(filePath, buffer);
+    return filePath;
+};
+
+const assertNumberingAndStylePreserved = (sourcePath, exportedPath) => {
+    const sourceZip = new AdmZip(sourcePath);
+    const exportedZip = new AdmZip(exportedPath);
+    assert.deepEqual(exportedZip.readFile('word/styles.xml'), sourceZip.readFile('word/styles.xml'));
+    assert.deepEqual(exportedZip.readFile('word/numbering.xml'), sourceZip.readFile('word/numbering.xml'));
+    const documentXml = exportedZip.readAsText('word/document.xml');
+    assert.match(documentXml, /<w:pStyle w:val="ContractClause"\/>/);
+    assert.match(documentXml, /<w:numPr>[\s\S]*?<w:numId w:val="7"\/>[\s\S]*?<\/w:numPr>/);
+};
 
 const makeTrackedDocx = (filePath) => {
     const zip = new AdmZip();
@@ -68,6 +116,97 @@ test('review DOCX is byte-identical while final DOCX has accepted revisions', as
     assert.notDeepEqual(final.buffer, review.buffer);
     assert.equal(review.filename, '测试合同-审阅版.docx');
     assert.equal(final.filename, '测试合同-最终版.docx');
+});
+
+test('DOCX export matrix remains compatible with pending, accepted, and rejected paired revisions', async (t) => {
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'document-export-state-matrix-'));
+    t.after(() => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+    const states = [
+        {
+            state: 'pending', variant: 'review', expectedStatus: 'pending',
+            expectedText: '建议条款内容', unexpectedText: '', keepsRevisions: true,
+        },
+        {
+            state: 'pending', variant: 'final', expectedStatus: 'accepted',
+            expectedText: '建议条款内容', unexpectedText: '原条款内容', keepsRevisions: false,
+        },
+        {
+            state: 'accepted', variant: 'review', expectedStatus: 'accepted',
+            expectedText: '建议条款内容', unexpectedText: '原条款内容', keepsRevisions: false,
+        },
+        {
+            state: 'accepted', variant: 'final', expectedStatus: 'accepted',
+            expectedText: '建议条款内容', unexpectedText: '原条款内容', keepsRevisions: false,
+        },
+        {
+            state: 'rejected', variant: 'review', expectedStatus: 'rejected',
+            expectedText: '原条款内容', unexpectedText: '建议条款内容', keepsRevisions: false,
+        },
+        {
+            state: 'rejected', variant: 'final', expectedStatus: 'rejected',
+            expectedText: '原条款内容', unexpectedText: '建议条款内容', keepsRevisions: false,
+        },
+    ];
+
+    for (const scenario of states) {
+        const source = path.join(tempDir, `${scenario.state}-source.docx`);
+        if (!fs.existsSync(source)) makeRevisionStateDocx(source, scenario.state);
+        const exported = await createDocumentExport({
+            sourcePath: source,
+            originalFilename: `${scenario.state}.docx`,
+            variant: scenario.variant,
+            format: 'docx',
+        });
+        const outputPath = await writeExportBuffer(
+            tempDir,
+            `${scenario.state}-${scenario.variant}.docx`,
+            exported.buffer,
+        );
+        const documentXml = new AdmZip(outputPath).readAsText('word/document.xml');
+        if (scenario.keepsRevisions) {
+            assert.match(documentXml, /<w:del\b[^>]*w:id="41"/);
+            assert.match(documentXml, /<w:ins\b[^>]*w:id="42"/);
+            assert.match(documentXml, /原条款内容/);
+            assert.match(documentXml, /建议条款内容/);
+        } else {
+            assert.doesNotMatch(documentXml, /<w:(?:ins|del)\b/);
+            assert.match(documentXml, new RegExp(scenario.expectedText));
+            assert.doesNotMatch(documentXml, new RegExp(scenario.unexpectedText));
+        }
+        assert.equal(detectRevisionGroupStatusInDocx(outputPath, REVISION_GROUP), scenario.expectedStatus);
+        assertNumberingAndStylePreserved(source, outputPath);
+
+        const { value: parsedText } = await mammoth.extractRawText({ path: outputPath });
+        assert.match(parsedText, /1\.2/);
+        assert.match(parsedText, new RegExp(scenario.expectedText));
+        if (!scenario.keepsRevisions) assert.doesNotMatch(parsedText, new RegExp(scenario.unexpectedText));
+    }
+});
+
+test('OnlyOffice native accept/reject save shapes remain parseable and export idempotently', async (t) => {
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'onlyoffice-native-resolution-'));
+    t.after(() => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+    for (const state of ['accepted', 'rejected']) {
+        const source = path.join(tempDir, `onlyoffice-${state}.docx`);
+        makeRevisionStateDocx(source, state);
+        assert.equal(detectRevisionGroupStatusInDocx(source, REVISION_GROUP), state);
+
+        const beforeXml = new AdmZip(source).readAsText('word/document.xml');
+        const exported = await createDocumentExport({
+            sourcePath: source,
+            originalFilename: `onlyoffice-${state}.docx`,
+            variant: 'final',
+            format: 'docx',
+        });
+        const outputPath = await writeExportBuffer(tempDir, `onlyoffice-${state}-final.docx`, exported.buffer);
+        const afterXml = new AdmZip(outputPath).readAsText('word/document.xml');
+        assert.equal(afterXml, beforeXml);
+        assert.equal(detectRevisionGroupStatusInDocx(outputPath, REVISION_GROUP), state);
+        const { value } = await mammoth.extractRawText({ path: outputPath });
+        assert.match(value, state === 'accepted' ? /建议条款内容/ : /原条款内容/);
+    }
 });
 
 test('download filename carries ASCII fallback and UTF-8 filename', () => {

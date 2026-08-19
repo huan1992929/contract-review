@@ -6,7 +6,7 @@ import api from '../api';
 export function useReviewEditor(state, helpers) {
     const {
         contract, isEditorReady, selectedSuggestionPreview, docEditorComponent,
-        editorReloading, editorReloadMessage,
+        editorReloading, editorReloadMessage, reviewApplyMode,
     } = state;
     const { suggestionOriginal, suggestionText } = helpers;
 
@@ -14,8 +14,13 @@ export function useReviewEditor(state, helpers) {
     const forceSaveDebounceTimer = ref(null);
     const forceSaveInFlight = ref(false);
     const hasPendingEditorChanges = ref(false);
+    const editorModeSyncing = ref(false);
+    const editorTrackRevisionsActive = ref(null);
+    const editorModeSyncError = ref('');
     let editorReloadWaiter = null;
     let documentMutationQueue = Promise.resolve();
+    let editorModeSyncQueue = Promise.resolve();
+    let trackRevisionsCallbackEditor = null;
 
     const getEditor = () => window?.DocEditor?.instances?.docEditorComponent || null;
 
@@ -30,6 +35,146 @@ export function useReviewEditor(state, helpers) {
         } catch {
             return null;
         }
+    };
+
+    const getEditorFrameWindow = () => {
+        try {
+            return document.querySelector('iframe[name="frameEditor"]')?.contentWindow || null;
+        } catch {
+            return null;
+        }
+    };
+
+    // The DocsAPI host wrapper does not expose the current Track Changes flag.
+    // The same-origin Community editor does expose the documented SDKJS review
+    // methods; read the effective flag after every write so the page switch can
+    // never claim "审阅修订" while the editor is actually performing direct edits.
+    const readEditorTrackRevisions = () => {
+        const editor = getCommunityEditor();
+        if (!editor) return null;
+        if (typeof editor.asc_IsTrackRevisions === 'function') {
+            return Boolean(editor.asc_IsTrackRevisions());
+        }
+        const logicDocument = editor.WordControl?.m_oLogicDocument;
+        if (typeof logicDocument?.IsTrackRevisions === 'function') {
+            return Boolean(logicDocument.IsTrackRevisions());
+        }
+        return null;
+    };
+
+    const reflectEditorTrackRevisions = (actual) => {
+        if (typeof actual !== 'boolean') return;
+        editorTrackRevisionsActive.value = actual;
+        if (!editorModeSyncing.value) {
+            reviewApplyMode.value = actual ? 'review' : 'edit';
+        }
+    };
+
+    const writeEditorTrackRevisions = (enabled) => {
+        const editor = getCommunityEditor();
+        if (!editor) throw new Error('EDITOR_NOT_READY');
+        let handled = false;
+
+        // Keep both the document-wide and this session's local flag aligned.
+        // This matters for files that already contain w:trackRevisions: merely
+        // switching the local flag off would still leave direct edit disabled.
+        if (typeof editor.asc_SetGlobalTrackRevisions === 'function') {
+            editor.asc_SetGlobalTrackRevisions(Boolean(enabled));
+            handled = true;
+        }
+        if (typeof editor.asc_SetLocalTrackRevisions === 'function') {
+            editor.asc_SetLocalTrackRevisions(Boolean(enabled));
+            handled = true;
+        } else if (typeof editor.asc_SetTrackRevisions === 'function') {
+            editor.asc_SetTrackRevisions(Boolean(enabled));
+            handled = true;
+        }
+
+        if (!handled) {
+            const frameWindow = getEditorFrameWindow();
+            const notificationCenter = frameWindow?.Common?.NotificationCenter;
+            if (typeof notificationCenter?.trigger === 'function') {
+                notificationCenter.trigger('reviewchanges:turn', enabled ? 'on' : 'off');
+                handled = true;
+            }
+        }
+        if (!handled) throw new Error('EDITOR_TRACK_REVISIONS_UNAVAILABLE');
+    };
+
+    const syncEditorTrackRevisions = (mode = reviewApplyMode.value, options = {}) => {
+        const desiredMode = mode === 'edit' ? 'edit' : 'review';
+        const desired = desiredMode === 'review';
+        const run = editorModeSyncQueue.then(async () => {
+            editorModeSyncing.value = true;
+            editorModeSyncError.value = '';
+            try {
+                if (!getCommunityEditor()) throw new Error('EDITOR_NOT_READY');
+                writeEditorTrackRevisions(desired);
+                await new Promise((resolve) => setTimeout(resolve, 120));
+                const actual = readEditorTrackRevisions();
+                editorTrackRevisionsActive.value = actual;
+                if (actual !== desired) {
+                    const error = new Error('EDITOR_TRACK_REVISIONS_MISMATCH');
+                    error.desiredMode = desiredMode;
+                    error.actualMode = actual === true ? 'review' : (actual === false ? 'edit' : 'unknown');
+                    throw error;
+                }
+                reviewApplyMode.value = desiredMode;
+                return true;
+            } catch (error) {
+                const actual = readEditorTrackRevisions();
+                // A failed verification must never leave the page switch
+                // claiming a mode different from the editor's effective mode.
+                if (typeof actual === 'boolean') {
+                    editorTrackRevisionsActive.value = actual;
+                    reviewApplyMode.value = actual ? 'review' : 'edit';
+                }
+                editorModeSyncError.value = error.message;
+                if (options.notify !== false) {
+                    ElMessage.error('未能同步在线文档的修订模式，请等待文档加载完成后重试。');
+                }
+                throw error;
+            } finally {
+                editorModeSyncing.value = false;
+            }
+        });
+        editorModeSyncQueue = run.catch(() => undefined);
+        return run;
+    };
+
+    const ensureReviewApplyMode = async (options = {}) => {
+        try {
+            await syncEditorTrackRevisions(reviewApplyMode.value, options);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+
+    const setReviewApplyMode = async (mode) => {
+        if (!['review', 'edit'].includes(mode) || editorModeSyncing.value) return false;
+        if (!isEditorReady.value) {
+            ElMessage.error('在线文档尚未加载完成，暂时无法切换修订模式。');
+            return false;
+        }
+        try {
+            return await syncEditorTrackRevisions(mode);
+        } catch {
+            return false;
+        }
+    };
+
+    const bindTrackRevisionsState = () => {
+        const editor = getCommunityEditor();
+        if (!editor || trackRevisionsCallbackEditor === editor) return;
+        trackRevisionsCallbackEditor = editor;
+        if (typeof editor.asc_registerCallback === 'function') {
+            editor.asc_registerCallback('asc_onOnTrackRevisionsChange', (localFlag, globalFlag) => {
+                const actual = Boolean(localFlag || globalFlag);
+                reflectEditorTrackRevisions(actual);
+            });
+        }
+        reflectEditorTrackRevisions(readEditorTrackRevisions());
     };
 
     const executeCommunityEditorMethod = (method, args = []) => {
@@ -219,7 +364,6 @@ export function useReviewEditor(state, helpers) {
                 return;
             }
             await executeEditorMethod('SelectRange', [matched.range]);
-            ElMessage.success('已定位到文档中的对应条款。');
         } catch (error) {
             ElMessage.error('文档定位失败，请检查 OnlyOffice 是否已完全加载。');
         }
@@ -232,6 +376,7 @@ export function useReviewEditor(state, helpers) {
             originalCandidates: buildReplacementCandidates(originalText, item),
             mode: options.mode === 'review' ? 'review' : 'edit',
             suggestionIndex: options.suggestionIndex,
+            suggestionId: options.suggestionId || item.revision_group?.suggestion_id || item.suggestion_id || item.id || '',
             expectedDocumentKey: contract.editorConfig?.document?.key,
         });
         return response.data;
@@ -266,7 +411,6 @@ export function useReviewEditor(state, helpers) {
             try {
                 const replacements = await replaceTextOnServer(originalText, suggestedText, item);
                 onSuccess?.({ fallback: true, replacements });
-                ElMessage.success(`${statusPrefix}；当前编辑器不刷新，重新打开该合同后可见。`);
             } catch (serverError) {
                 const message = serverError.response?.data?.error || '服务器替换失败，请缩短原文片段后重试。';
                 ElMessage.error(message);
@@ -354,10 +498,8 @@ export function useReviewEditor(state, helpers) {
             const refreshed = await refreshEditorDocument();
             if (refreshed) {
                 onSuccess?.({ fallback: true, refreshed: true, replacements });
-                ElMessage.success('已更新源文件并尝试自动刷新编辑器');
             } else {
                 onSuccess?.({ fallback: true, replacements });
-                ElMessage.success('已更新源文件，刷新页面后可查看变更');
             }
         } catch (err) {
             const msg = err.response?.data?.error || '替换失败';
@@ -368,6 +510,7 @@ export function useReviewEditor(state, helpers) {
 
     const replaceTextInEditorFinal = (originalText, suggestedText, onSuccess, onFailure, item = {}, options = {}) => runDocumentMutation(async () => {
         try {
+            if (!await ensureReviewApplyMode()) return onFailure?.('编辑器修订模式未同步');
             await forceSaveCurrentDocument(true);
             await new Promise((resolve) => setTimeout(resolve, 650));
             const result = await replaceTextOnServer(originalText, suggestedText, item, options);
@@ -376,7 +519,9 @@ export function useReviewEditor(state, helpers) {
         } catch (error) {
             const message = error.message === 'EDITOR_RELOAD_TIMEOUT'
                 ? '修订已写入，但在线文档重新加载超时，请刷新页面查看。'
-                : (error.response?.data?.error || '替换失败，文档未发生变化。');
+                : (error.message === 'EDITOR_TRACK_REVISIONS_MISMATCH'
+                    ? '修订已写入，但编辑器模式校验失败，请刷新页面确认。'
+                    : (error.response?.data?.error || '替换失败，文档未发生变化。'));
             ElMessage.error(message);
             onFailure?.(message);
         }
@@ -384,6 +529,7 @@ export function useReviewEditor(state, helpers) {
 
     const appendClauseInEditorFinal = (title, content, onSuccess, onFailure, options = {}) => runDocumentMutation(async () => {
         try {
+            if (!await ensureReviewApplyMode()) return onFailure?.('编辑器修订模式未同步');
             await forceSaveCurrentDocument(true);
             await new Promise((resolve) => setTimeout(resolve, 650));
             const response = await api.appendContractClause(contract.id, {
@@ -391,6 +537,7 @@ export function useReviewEditor(state, helpers) {
                 content,
                 mode: options.mode === 'review' ? 'review' : 'edit',
                 suggestionIndex: options.suggestionIndex,
+                suggestionId: options.suggestionId || '',
                 anchorHint: options.anchorHint || '',
                 currentClause: options.currentClause || '',
                 targetClauseNo: options.targetClauseNo || '',
@@ -419,7 +566,6 @@ export function useReviewEditor(state, helpers) {
                 documentKey: contract.editorConfig?.document?.key,
             });
             hasPendingEditorChanges.value = false;
-            if (!silent) ElMessage.success('已触发文档保存同步');
             return true;
         } catch (error) {
             console.warn('[OnlyOffice] force-save failed', error.response?.data || error.message);
@@ -471,12 +617,21 @@ export function useReviewEditor(state, helpers) {
 
     const onDocumentReady = () => {
         console.log("[INFO] OnlyOffice document is ready.");
-        setTimeout(() => {
+        setTimeout(async () => {
             isEditorReady.value = Boolean(getEditor() || getCommunityEditor());
             if (isEditorReady.value) {
-                editorReloading.value = false;
-                startAutoForceSave();
-                settleEditorReload();
+                const desiredMode = reviewApplyMode.value;
+                bindTrackRevisionsState();
+                try {
+                    await syncEditorTrackRevisions(desiredMode, { notify: false });
+                    editorReloading.value = false;
+                    startAutoForceSave();
+                    settleEditorReload();
+                } catch (error) {
+                    editorReloading.value = false;
+                    settleEditorReload(error);
+                    ElMessage.error('在线文档已载入，但修订模式校验失败，请重新切换后再处理建议。');
+                }
             }
         }, 300);
     };
@@ -491,6 +646,7 @@ export function useReviewEditor(state, helpers) {
 
     return {
         forceSaveTimer, forceSaveDebounceTimer, forceSaveInFlight, hasPendingEditorChanges,
+        editorModeSyncing, editorTrackRevisionsActive, editorModeSyncError,
         getEditor, getCommunityEditor, executeEditorMethod, findTextRange, normalizeCandidate,
         splitCandidateSentences, clauseBodyCandidate, buildSuggestionCandidates, buildReplacementCandidates, findTextRangeByCandidates,
         ensureEditorReady, previewSuggestion, locateText, replaceTextOnServer,
@@ -498,6 +654,7 @@ export function useReviewEditor(state, helpers) {
         runDocumentMutation,
         replaceTextInEditorFinal, appendClauseInEditorFinal,
         forceSaveCurrentDocument, scheduleForceSave, stopAutoForceSave, startAutoForceSave,
+        readEditorTrackRevisions, syncEditorTrackRevisions, ensureReviewApplyMode, setReviewApplyMode,
         onDocumentStateChange, onDocumentReady, onEditorError,
     };
 }

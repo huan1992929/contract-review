@@ -8,8 +8,14 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { requireRequestUserId, findOwnedContract } = require('../../services/contractAnalysis/auth');
 const { createContractVersionSnapshot } = require('../../services/contractAnalysis/version');
-const { replaceTextInDocx, appendClauseInDocx } = require('../../services/contractAnalysis/docxEdit');
+const {
+    replaceTextInDocx,
+    appendClauseInDocx,
+    resolveRevisionGroupInDocx,
+    syncRevisionGroupsFromDocx,
+} = require('../../services/contractAnalysis/docxEdit');
 const { buildOnlyOfficeConfig } = require('../../services/contractAnalysis/onlyoffice');
+const { getIoInstance } = require('../../services/contractAnalysis/analysisJob');
 
 const parseAnalysisResult = (contract) => {
     try {
@@ -21,7 +27,21 @@ const parseAnalysisResult = (contract) => {
     }
 };
 
-const markSuggestionApplied = (analysis, indexes, mode, documentKey) => {
+const persistRevisionGroup = (analysis, suggestion, revisionGroup, documentKey) => {
+    if (!revisionGroup) return;
+    const storedGroup = {
+        ...revisionGroup,
+        document_key: documentKey,
+    };
+    suggestion.revision_group = storedGroup;
+    const registry = Array.isArray(analysis.revision_groups) ? analysis.revision_groups : [];
+    const existingIndex = registry.findIndex((item) => item?.group_id === storedGroup.group_id);
+    if (existingIndex >= 0) registry[existingIndex] = storedGroup;
+    else registry.push(storedGroup);
+    analysis.revision_groups = registry;
+};
+
+const markSuggestionApplied = (analysis, indexes, mode, documentKey, revisionGroups = new Map()) => {
     const suggestions = Array.isArray(analysis.modification_suggestions)
         ? analysis.modification_suggestions
         : [];
@@ -33,6 +53,7 @@ const markSuggestionApplied = (analysis, indexes, mode, documentKey) => {
         item.adopted = mode === 'edit';
         item.applied_at = new Date().toISOString();
         item.applied_document_key = documentKey;
+        persistRevisionGroup(analysis, item, revisionGroups.get(Number(index)), documentKey);
     }
     return analysis;
 };
@@ -54,6 +75,10 @@ const docxErrorResponse = (res, error, fallback) => {
         DOCX_COMPLEX_PARAGRAPH_UNSUPPORTED: '目标条款已包含批注、修订或复杂域，无法安全自动改写，请在左侧文档中人工处理。',
         DOCX_APPEND_MIXED_SECTIONS: '新增建议同时包含多个不同目录的条款，系统已取消写入。请拆分为独立建议后分别新增。',
         DOCUMENT_VERSION_STALE: '文档已被其他修改更新，请刷新后再采纳该建议。',
+        REVISION_GROUP_NOT_FOUND: '未找到该建议对应的审阅修订组。',
+        REVISION_GROUP_NOT_PENDING: '该建议的修订状态已变化，请先同步文档状态后重试。',
+        REVISION_GROUP_AMBIGUOUS: '文档内存在重复的修订标识，系统已取消处理以避免误改。',
+        INVALID_REVISION_RESOLUTION: '修订处理方式无效。',
     };
     if (messages[error.message]) {
         return res.status(error.status || 409).json({ error: messages[error.message], code: error.message });
@@ -62,13 +87,64 @@ const docxErrorResponse = (res, error, fallback) => {
     return res.status(500).json({ error: fallback });
 };
 
-const updateContractAfterApply = async (contract, nextKey, analysis, appliedIndexes, mode) => {
-    const updatedAnalysis = markSuggestionApplied(analysis, appliedIndexes, mode, nextKey);
+const updateContractAfterApply = async (contract, nextKey, analysis, appliedIndexes, mode, revisionGroups = new Map()) => {
+    const updatedAnalysis = markSuggestionApplied(analysis, appliedIndexes, mode, nextKey, revisionGroups);
     await db('contracts').where({ id: contract.id }).update({
         document_key: nextKey,
         analysis_result: JSON.stringify(updatedAnalysis),
         updated_at: db.fn.now(),
     });
+};
+
+const suggestionIdentity = (contract, suggestionIndex, providedId) => {
+    if (String(providedId || '').trim()) return String(providedId).trim();
+    if (Number.isInteger(Number(suggestionIndex))) return `contract-${contract.id}-suggestion-${Number(suggestionIndex)}`;
+    return `contract-${contract.id}-suggestion-${uuidv4()}`;
+};
+
+const emitSuggestionStatusChanged = (
+    req, contractId, suggestionIndex, applicationStatus, revisionGroup, documentKey, editorConfig,
+) => {
+    const io = req.app?.get?.('io') || getIoInstance();
+    if (!io) return;
+    io.to(`contract-${contractId}`).emit('suggestion-status-changed', {
+        contractId,
+        contract_id: contractId,
+        suggestionIndex: Number(suggestionIndex),
+        suggestion_index: Number(suggestionIndex),
+        applicationStatus,
+        application_status: applicationStatus,
+        revisionStatus: revisionGroup?.status || '',
+        revision_status: revisionGroup?.status || '',
+        suggestionId: revisionGroup?.suggestion_id || '',
+        suggestion_id: revisionGroup?.suggestion_id || '',
+        documentKey: documentKey || revisionGroup?.document_key || '',
+        document_key: documentKey || revisionGroup?.document_key || '',
+        editorConfig,
+    });
+};
+
+const updateResolvedSuggestion = (analysis, suggestionIndex, resolution, documentKey) => {
+    const suggestions = Array.isArray(analysis.modification_suggestions)
+        ? analysis.modification_suggestions
+        : [];
+    const item = suggestions[Number(suggestionIndex)];
+    if (!item?.revision_group) throw new Error('REVISION_GROUP_NOT_FOUND');
+    const resolvedAt = new Date().toISOString();
+    const status = resolution === 'accept' ? 'accepted' : 'rejected';
+    item.revision_group.status = status;
+    item.revision_group.resolved_at = resolvedAt;
+    item.revision_group.document_key = documentKey;
+    item.application_status = resolution === 'accept' ? 'applied' : 'rejected';
+    item.review_pending = false;
+    item.adopted = resolution === 'accept';
+    item.resolved_at = resolvedAt;
+    item.applied_document_key = documentKey;
+    if (Array.isArray(analysis.revision_groups)) {
+        const registered = analysis.revision_groups.find((group) => group?.group_id === item.revision_group.group_id);
+        if (registered) Object.assign(registered, item.revision_group);
+    }
+    return item;
 };
 
 module.exports = function (router) {
@@ -77,7 +153,7 @@ module.exports = function (router) {
         if (!userId) return;
         const {
             originalText, suggestedText, originalCandidates = [], mode: rawMode,
-            expectedDocumentKey, suggestionIndex,
+            expectedDocumentKey, suggestionIndex, suggestionId,
         } = req.body || {};
         if (!String(originalText || '').trim() || suggestedText === undefined || suggestedText === null) {
             return res.status(400).json({ error: 'originalText and suggestedText are required.' });
@@ -99,14 +175,22 @@ module.exports = function (router) {
 
             workingPath = tempDocxPath(contract.storage_path);
             fs.copyFileSync(contract.storage_path, workingPath);
-            const result = replaceTextInDocx(workingPath, originalText, suggestedText, originalCandidates, { mode, author: 'AI审查' });
+            const stableSuggestionId = suggestionIdentity(contract, suggestionIndex, suggestionId);
+            const result = replaceTextInDocx(workingPath, originalText, suggestedText, originalCandidates, {
+                mode,
+                author: 'AI审查',
+                suggestionId: stableSuggestionId,
+                revisionGroupId: `ai-${uuidv4()}`,
+            });
             const version = await createContractVersionSnapshot(contract, `${mode}-replace-text`);
             fs.renameSync(workingPath, contract.storage_path);
             workingPath = '';
 
             const nextKey = uuidv4();
             const indexes = Number.isInteger(Number(suggestionIndex)) ? [Number(suggestionIndex)] : [];
-            await updateContractAfterApply(contract, nextKey, parseAnalysisResult(contract), indexes, mode);
+            const revisionGroups = new Map();
+            if (indexes.length && result.revisionGroup) revisionGroups.set(indexes[0], result.revisionGroup);
+            await updateContractAfterApply(contract, nextKey, parseAnalysisResult(contract), indexes, mode, revisionGroups);
             return res.json({
                 ...result,
                 version,
@@ -147,10 +231,16 @@ module.exports = function (router) {
                     continue;
                 }
                 try {
+                    const stableSuggestionId = suggestionIdentity(contract, item.suggestionIndex, item.suggestionId || item.suggestion_id || item.id);
                     const result = replaceTextInDocx(
                         workingPath, originalText, suggestedText,
                         item.originalCandidates || item.original_candidates || [],
-                        { mode, author: 'AI审查' },
+                        {
+                            mode,
+                            author: 'AI审查',
+                            suggestionId: stableSuggestionId,
+                            revisionGroupId: `ai-${uuidv4()}`,
+                        },
                     );
                     totalReplacements += result.replacements;
                     if (Number.isInteger(Number(item.suggestionIndex))) appliedIndexes.push(Number(item.suggestionIndex));
@@ -172,7 +262,13 @@ module.exports = function (router) {
             fs.renameSync(workingPath, contract.storage_path);
             workingPath = '';
             const nextKey = uuidv4();
-            await updateContractAfterApply(contract, nextKey, parseAnalysisResult(contract), appliedIndexes, mode);
+            const revisionGroups = new Map();
+            for (const item of results) {
+                if (item.ok && Number.isInteger(Number(item.suggestionIndex)) && item.revisionGroup) {
+                    revisionGroups.set(Number(item.suggestionIndex), item.revisionGroup);
+                }
+            }
+            await updateContractAfterApply(contract, nextKey, parseAnalysisResult(contract), appliedIndexes, mode, revisionGroups);
             return res.json({
                 version, mode,
                 applicationStatus: mode === 'review' ? 'pending_review' : 'applied',
@@ -250,6 +346,166 @@ module.exports = function (router) {
         } catch (error) {
             if (workingPath && fs.existsSync(workingPath)) fs.unlinkSync(workingPath);
             return docxErrorResponse(res, error, '追加条款失败。');
+        }
+    });
+
+    router.post('/:id/revisions/sync', async (req, res) => {
+        const userId = requireRequestUserId(req, res);
+        if (!userId) return;
+        try {
+            const contract = await findOwnedContract(req.params.id, userId);
+            if (!contract) return res.status(404).json({ error: 'Contract not found.' });
+            assertCurrentDocumentKey(contract, req.body?.expectedDocumentKey);
+            const syncResult = syncRevisionGroupsFromDocx(contract.storage_path, parseAnalysisResult(contract));
+            const requiresReload = syncResult.changed
+                && syncResult.results.some((item) => ['accepted', 'rejected'].includes(item.status));
+            const nextKey = requiresReload ? uuidv4() : contract.document_key;
+            const ext = path.extname(contract.storage_path).toLowerCase().replace('.', '');
+            const editorConfig = requiresReload
+                ? buildOnlyOfficeConfig({ ...contract, document_key: nextKey }, ext, { reviewMode: true })
+                : undefined;
+            if (syncResult.changed) {
+                for (const revision of syncResult.results) {
+                    const group = syncResult.analysis.modification_suggestions?.[revision.index]?.revision_group;
+                    if (group && ['accepted', 'rejected'].includes(revision.status)) group.document_key = nextKey;
+                }
+                const update = {
+                    analysis_result: JSON.stringify(syncResult.analysis),
+                    updated_at: db.fn.now(),
+                };
+                if (requiresReload) update.document_key = nextKey;
+                await db('contracts').where({ id: contract.id }).update(update);
+                for (const revision of syncResult.results.filter((item) => ['accepted', 'rejected'].includes(item.status))) {
+                    const suggestion = syncResult.analysis.modification_suggestions?.[revision.index];
+                    emitSuggestionStatusChanged(
+                        req,
+                        contract.id,
+                        revision.index,
+                        suggestion?.application_status || (revision.status === 'accepted' ? 'applied' : 'rejected'),
+                        suggestion?.revision_group,
+                        nextKey,
+                        editorConfig,
+                    );
+                }
+            }
+            return res.json({
+                ok: true,
+                changed: syncResult.changed,
+                documentChanged: syncResult.documentChanged,
+                revisions: syncResult.results,
+                editorConfig,
+            });
+        } catch (error) {
+            return docxErrorResponse(res, error, '同步审阅修订状态失败。');
+        }
+    });
+
+    const resolveRevision = (resolution) => async (req, res) => {
+        const userId = requireRequestUserId(req, res);
+        if (!userId) return;
+        let workingPath = '';
+        try {
+            const contract = await findOwnedContract(req.params.id, userId);
+            if (!contract) return res.status(404).json({ error: 'Contract not found.' });
+            assertCurrentDocumentKey(contract, req.body?.expectedDocumentKey);
+            const analysis = parseAnalysisResult(contract);
+            const suggestionIndex = Number(req.params.suggestionIndex);
+            const suggestion = analysis.modification_suggestions?.[suggestionIndex];
+            if (!suggestion?.revision_group) throw new Error('REVISION_GROUP_NOT_FOUND');
+
+            workingPath = tempDocxPath(contract.storage_path);
+            fs.copyFileSync(contract.storage_path, workingPath);
+            const result = resolveRevisionGroupInDocx(workingPath, suggestion.revision_group, resolution);
+            let version = null;
+            let nextKey = contract.document_key;
+            if (result.changed) {
+                version = await createContractVersionSnapshot(contract, `review-${resolution}-suggestion`);
+                fs.renameSync(workingPath, contract.storage_path);
+                workingPath = '';
+                nextKey = uuidv4();
+            } else {
+                fs.unlinkSync(workingPath);
+                workingPath = '';
+            }
+
+            updateResolvedSuggestion(analysis, suggestionIndex, resolution, nextKey);
+            await db('contracts').where({ id: contract.id }).update({
+                document_key: nextKey,
+                analysis_result: JSON.stringify(analysis),
+                updated_at: db.fn.now(),
+            });
+            const ext = path.extname(contract.storage_path).toLowerCase().replace('.', '');
+            const editorConfig = buildOnlyOfficeConfig({ ...contract, document_key: nextKey }, ext, { reviewMode: true });
+            emitSuggestionStatusChanged(
+                req,
+                contract.id,
+                suggestionIndex,
+                suggestion.application_status,
+                suggestion.revision_group,
+                nextKey,
+                editorConfig,
+            );
+            return res.json({
+                ok: true,
+                resolution,
+                status: result.status,
+                changed: result.changed,
+                alreadyResolved: result.alreadyResolved,
+                version,
+                revisionGroup: suggestion.revision_group,
+                editorConfig,
+            });
+        } catch (error) {
+            if (workingPath && fs.existsSync(workingPath)) fs.unlinkSync(workingPath);
+            return docxErrorResponse(res, error, resolution === 'accept'
+                ? '接受审阅修订失败。'
+                : '拒绝审阅修订失败。');
+        }
+    };
+
+    router.post('/:id/revisions/:suggestionIndex/accept', resolveRevision('accept'));
+    router.post('/:id/revisions/:suggestionIndex/reject', resolveRevision('reject'));
+
+    // Unified API consumed by the review UI. Keep the explicit accept/reject
+    // endpoints above for compatibility with integrations already using them.
+    router.post('/:id/suggestions/:suggestionIndex/status', async (req, res, next) => {
+        const requestedStatus = String(req.body?.status || '').toLowerCase();
+        if (['accept', 'accepted', 'applied'].includes(requestedStatus)) {
+            return resolveRevision('accept')(req, res, next);
+        }
+        if (['reject', 'rejected'].includes(requestedStatus)) {
+            return resolveRevision('reject')(req, res, next);
+        }
+        return res.status(400).json({ error: '状态必须为 accepted/applied 或 rejected。', code: 'INVALID_REVISION_RESOLUTION' });
+    });
+
+    router.get('/:id/suggestion-statuses', async (req, res) => {
+        const userId = requireRequestUserId(req, res);
+        if (!userId) return;
+        try {
+            const contract = await findOwnedContract(req.params.id, userId);
+            if (!contract) return res.status(404).json({ error: 'Contract not found.' });
+            const analysis = parseAnalysisResult(contract);
+            const suggestions = Array.isArray(analysis.modification_suggestions)
+                ? analysis.modification_suggestions
+                : [];
+            return res.json({
+                contractId: contract.id,
+                contract_id: contract.id,
+                documentKey: contract.document_key,
+                statuses: suggestions.map((item, index) => ({
+                    suggestionIndex: index,
+                    suggestion_index: index,
+                    suggestionId: item?.revision_group?.suggestion_id || item?.suggestion_id || item?.id || '',
+                    suggestion_id: item?.revision_group?.suggestion_id || item?.suggestion_id || item?.id || '',
+                    applicationStatus: item?.application_status || 'pending',
+                    application_status: item?.application_status || 'pending',
+                    revisionStatus: item?.revision_group?.status || '',
+                    revision_status: item?.revision_group?.status || '',
+                })),
+            });
+        } catch (error) {
+            return docxErrorResponse(res, error, '读取建议处理状态失败。');
         }
     });
 };

@@ -119,17 +119,9 @@
           <button @click="previewSuggestion(item)" class="mr-2 px-3 py-1.5 text-xs font-medium text-primary bg-white border border-primary rounded hover:bg-primary-light transition-colors">
             {{ item._showPreview ? '收起变更' : '查看变更' }}
           </button>
-          <button @click="adoptSuggestion(item, index)" :disabled="isPdfContract || isSuggestionResolved(item) || item._applying" class="px-3 py-1.5 text-xs font-medium text-white bg-primary rounded hover:bg-primary-dark transition-colors flex items-center disabled:opacity-50 disabled:cursor-not-allowed">
+          <button @click="adoptSuggestion(item, index)" :disabled="isPdfContract || isSuggestionApplied(item) || item._applying" class="px-3 py-1.5 text-xs font-medium text-white bg-primary rounded hover:bg-primary-dark transition-colors flex items-center disabled:opacity-50 disabled:cursor-not-allowed">
             <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
-            {{ item._applying
-              ? '处理中...'
-              : (item.application_status === 'pending_review'
-              ? '已加入修订'
-              : (item.adopted
-                ? '已采纳'
-                : (isMissingClauseSuggestion(item)
-                  ? (reviewApplyMode === 'review' ? '新增修订' : '新增至合同')
-                  : (reviewApplyMode === 'review' ? '加入审阅修订' : '直接编辑')))) }}
+            {{ suggestionActionLabel(item) }}
           </button>
         </div>
         <div v-if="item._showPreview" class="mt-3 grid grid-cols-1 xl:grid-cols-2 gap-3 text-xs">
@@ -199,7 +191,7 @@ export default {
       selectedSuggestionIndexes, batchApplying,
       suggestionTitle, suggestionOriginal, suggestionText, suggestionReason, suggestionCitations, isMissingClauseSuggestion,
       locateText, addDocComment, previewSuggestion, adoptSuggestion,
-      applySelectedSuggestions, isSuggestionApplied, toggleNegotiation, adoptFallbackOption,
+      applySelectedSuggestions, isSuggestionApplied, suggestionApplicationStatus, toggleNegotiation, adoptFallbackOption,
       normalizeSeverity,
     } = review;
 
@@ -208,7 +200,7 @@ export default {
       ? reviewData.modification_suggestions
       : []);
     const expandedSuggestionIndexes = ref([]);
-    const isSuggestionResolved = (item) => isSuggestionApplied(item) || item?.application_status === 'applied';
+    const isSuggestionResolved = (item) => ['pending_review', 'accepted', 'applied'].includes(suggestionApplicationStatus(item));
     const suggestionSeverity = (item, index) => {
       const direct = item?.severity || item?.risk_level;
       if (direct) return normalizeSeverity(direct) === 'high' ? 'high' : 'medium';
@@ -222,14 +214,26 @@ export default {
         : 'suggestion-index--medium';
     };
     const suggestionIndexLabel = (item, index) => {
-      const status = isSuggestionResolved(item)
-        ? '已处理'
-        : (suggestionSeverity(item, index) === 'high' ? '高风险' : '中风险');
+      const status = suggestionStatusLabel(item, index);
       return `第 ${index + 1} 项，${status}：${suggestionTitle(item, index)}`;
     };
     const suggestionStatusLabel = (item, index) => {
-      if (isSuggestionResolved(item)) return '已处理';
+      const status = suggestionApplicationStatus(item);
+      if (status === 'pending_review') return '已处理·待确认';
+      if (['accepted', 'applied'].includes(status)) return '已生效';
+      if (status === 'rejected') return '已拒绝·待处理';
       return suggestionSeverity(item, index) === 'high' ? '高风险' : '中风险';
+    };
+    const suggestionActionLabel = (item) => {
+      if (item?._applying) return '处理中...';
+      const status = suggestionApplicationStatus(item);
+      if (status === 'pending_review') return '已处理·待确认';
+      if (['accepted', 'applied'].includes(status)) return '已生效';
+      const retryPrefix = status === 'rejected' ? '重新' : '';
+      if (isMissingClauseSuggestion(item)) {
+        return reviewApplyMode.value === 'review' ? `${retryPrefix}新增修订` : `${retryPrefix}新增至合同`;
+      }
+      return reviewApplyMode.value === 'review' ? `${retryPrefix}加入审阅修订` : `${retryPrefix}直接编辑`;
     };
     const isSuggestionExpanded = (index) => expandedSuggestionIndexes.value.includes(index);
     const scrollSuggestionIntoView = async (index) => {
@@ -287,7 +291,7 @@ export default {
       suggestionTitle, suggestionOriginal, suggestionText, suggestionReason, suggestionCitations, isMissingClauseSuggestion,
       locateText, addDocComment, previewSuggestion, adoptSuggestion,
       applySelectedSuggestions, isSuggestionApplied, isSuggestionResolved, toggleNegotiation, adoptFallbackOption,
-      suggestionIndexClass, suggestionIndexLabel, suggestionStatusLabel,
+      suggestionIndexClass, suggestionIndexLabel, suggestionStatusLabel, suggestionActionLabel,
       isSuggestionExpanded, activateSuggestion, toggleSuggestion,
     };
   },

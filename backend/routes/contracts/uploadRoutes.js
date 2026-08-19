@@ -28,6 +28,7 @@ const { buildOnlyOfficeConfig, normalizeOnlyOfficeDownloadUrl } = require('../..
 const { extractTextFromFile } = require('../../services/contractAnalysis/fileExtraction');
 const { getIoInstance } = require('../../services/contractAnalysis/analysisJob');
 const { diffClauses } = require('../../services/incrementalReview');
+const { syncRevisionGroupsFromDocx } = require('../../services/contractAnalysis/docxEdit');
 
 const ALLOWED_EXTENSIONS = ['.docx', '.pdf'];
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -124,8 +125,55 @@ module.exports = function (router) {
                         writer.on('finish', resolve);
                         writer.on('error', reject);
                     });
-                    await db('contracts').where({ id: contract.id }).update({ updated_at: db.fn.now() });
+                    let revisionSync = { changed: false, results: [], analysis: null };
+                    try {
+                        const analysis = typeof contract.analysis_result === 'string'
+                            ? JSON.parse(contract.analysis_result || '{}')
+                            : (contract.analysis_result || {});
+                        revisionSync = syncRevisionGroupsFromDocx(contract.storage_path, analysis);
+                    } catch (syncError) {
+                        console.warn('[OnlyOffice] revision status sync failed:', syncError.message);
+                    }
+                    const resolvedRevisions = revisionSync.results.filter((item) => ['accepted', 'rejected'].includes(item.status));
+                    const requiresReload = revisionSync.changed && resolvedRevisions.length > 0;
+                    const nextDocumentKey = requiresReload ? uuidv4() : contract.document_key;
+                    if (revisionSync.changed) {
+                        for (const revision of resolvedRevisions) {
+                            const group = revisionSync.analysis.modification_suggestions?.[revision.index]?.revision_group;
+                            if (group) group.document_key = nextDocumentKey;
+                        }
+                    }
+                    const contractUpdate = { updated_at: db.fn.now() };
+                    if (revisionSync.changed) contractUpdate.analysis_result = JSON.stringify(revisionSync.analysis);
+                    if (requiresReload) contractUpdate.document_key = nextDocumentKey;
+                    await db('contracts').where({ id: contract.id }).update(contractUpdate);
                     console.log(`[OnlyOffice] saved file for contract ${contract.id} from status ${body.status}`);
+
+                    if (revisionSync.changed) {
+                        const io = req.app?.get?.('io') || getIoInstance();
+                        const ext = path.extname(contract.storage_path).toLowerCase().replace('.', '');
+                        const editorConfig = requiresReload
+                            ? buildOnlyOfficeConfig({ ...contract, document_key: nextDocumentKey }, ext, { reviewMode: true })
+                            : undefined;
+                        for (const revision of resolvedRevisions) {
+                            const applicationStatus = revision.status === 'accepted' ? 'applied' : 'rejected';
+                            io?.to(`contract-${contract.id}`).emit('suggestion-status-changed', {
+                                contractId: contract.id,
+                                contract_id: contract.id,
+                                suggestionIndex: revision.index,
+                                suggestion_index: revision.index,
+                                applicationStatus,
+                                application_status: applicationStatus,
+                                revisionStatus: revision.status,
+                                revision_status: revision.status,
+                                suggestionId: revision.suggestionId,
+                                suggestion_id: revision.suggestionId,
+                                documentKey: nextDocumentKey,
+                                document_key: nextDocumentKey,
+                                editorConfig,
+                            });
+                        }
+                    }
 
                     // 3.1 增量审查:保存后计算 diff_summary 并推送 contract-modified 事件
                     try {

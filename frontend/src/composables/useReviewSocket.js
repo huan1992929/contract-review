@@ -15,7 +15,10 @@ export function useReviewSocket(state, deps) {
         perspective, reAnalyzing, socket,
         contractModifiedNotice,
     } = state;
-    const { startStatusPolling, stopStatusPolling, stopElapsedTimer } = deps;
+    const {
+        startStatusPolling, stopStatusPolling, stopElapsedTimer,
+        applySuggestionStatusPayload = () => {},
+    } = deps;
 
     const qaPanelOpen = ref(false);
     const qaInput = ref('');
@@ -37,6 +40,12 @@ export function useReviewSocket(state, deps) {
         socket.value.on('connect', () => {
             console.log('Connected to collaboration server');
             socket.value.emit('join-contract', contractId);
+            // Recover any accept/reject events missed while the page or socket
+            // was disconnected. This is intentionally silent: the persistent
+            // risk marker is the confirmation surface.
+            api.getSuggestionApplicationStatuses(contractId)
+                .then((response) => applySuggestionStatusPayload(response.data || {}))
+                .catch((error) => console.warn('[Review] suggestion status refresh failed', error));
         });
 
         socket.value.on('connect_error', (error) => {
@@ -110,6 +119,19 @@ export function useReviewSocket(state, deps) {
             };
             ElMessage.warning(`检测到合同修订(${data.total_changes || 0} 处变更),建议执行增量审查`);
         });
+
+        const handleSuggestionStatusChanged = (data) => {
+            if (!data) return;
+            const eventContractId = data.contractId ?? data.contract_id;
+            if (eventContractId !== undefined && Number(eventContractId) !== Number(contractId)) return;
+            applySuggestionStatusPayload(data);
+        };
+        // `suggestion-status-changed` is the canonical service event. Keep the
+        // two aliases during rollout so an older callback worker can coexist
+        // without leaving the risk panel stale.
+        socket.value.on('suggestion-status-changed', handleSuggestionStatusChanged);
+        socket.value.on('revision-status-changed', handleSuggestionStatusChanged);
+        socket.value.on('suggestion-application-status', handleSuggestionStatusChanged);
 
         socket.value.on('disconnect', () => {
             if (analysisActive.value) startStatusPolling();
