@@ -780,6 +780,22 @@ const normalizeReplacementCandidates = (originalText, originalCandidates = []) =
     });
 };
 
+// Review suggestions sometimes contain an instruction wrapper intended for a
+// human reader (for example "附件三第四条修改为：..."). The wrapper is not part
+// of the contract text and must never be written into the DOCX.
+const stripReplacementInstructionPrefix = (text) => String(text || '').trim().replace(
+    /^[^：:\n]{0,80}(?:修改为|调整为|替换为|修订为|改为)\s*[：:]\s*/,
+    '',
+).trim();
+
+const withoutTerminalPunctuation = (text) => String(text || '').trim().replace(/[。；;，,！!？?：:]+$/u, '');
+
+const coversWholeParagraphIgnoringTerminalPunctuation = (paragraphTextValue, needle) => {
+    const paragraph = normalizeForDocxMatch(withoutTerminalPunctuation(paragraphTextValue)).value;
+    const candidate = normalizeForDocxMatch(withoutTerminalPunctuation(needle)).value;
+    return Boolean(paragraph && candidate && paragraph === candidate);
+};
+
 const resolveParagraphMatch = (documentXml, originalText, suggestedText, originalCandidates = []) => {
     const paragraphs = [];
     const pattern = /<w:p\b[^>]*>[\s\S]*?<\/w:p>/g;
@@ -798,9 +814,15 @@ const resolveParagraphMatch = (documentXml, originalText, suggestedText, origina
                 const paragraph = paragraphs[index];
                 const target = parseClausePrefix(paragraph.text);
                 if (bodyOnly && target.clauseNo !== source.clauseNo) continue;
-                const range = findDocxTextRange(paragraph.text, needle);
+                let range = findDocxTextRange(paragraph.text, needle);
                 if (!range) continue;
-                let replacement = String(suggestedText || '').trim();
+                // When the anchor omits only the terminal punctuation, replace
+                // the complete paragraph so the old full stop is not left after
+                // the inserted clause.
+                if (coversWholeParagraphIgnoringTerminalPunctuation(paragraph.text, needle)) {
+                    range = { start: 0, end: paragraph.text.length };
+                }
+                let replacement = stripReplacementInstructionPrefix(suggestedText);
                 const replacementInfo = parseClausePrefix(replacement);
                 if (bodyOnly && replacementInfo.clauseNo === source.clauseNo) replacement = replacementInfo.body;
                 if (!bodyOnly && source.clauseNo && !replacementInfo.clauseNo) {

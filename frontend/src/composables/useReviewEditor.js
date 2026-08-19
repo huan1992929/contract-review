@@ -223,6 +223,71 @@ export function useReviewEditor(state, helpers) {
         throw new Error(`EDITOR_METHOD_UNAVAILABLE:${method}`);
     };
 
+    // SearchNext only guarantees that a match is visible. In long documents it
+    // commonly leaves the selected clause at the bottom edge, which makes the
+    // risk card/document relationship hard to inspect. Locate the Community
+    // editor's scroll controller dynamically (the property name on the editor
+    // object is minified and can change between OnlyOffice builds) and move the
+    // active caret to the vertical center of the document viewport.
+    const centerCommunityEditorSelection = async () => {
+        const frameWindow = getEditorFrameWindow();
+        const editor = getCommunityEditor();
+        if (!frameWindow || !editor) return false;
+        await new Promise((resolve) => setTimeout(resolve, 120));
+
+        const cursor = frameWindow.document.getElementById('id_target_cursor');
+        const viewer = frameWindow.document.getElementById('id_viewer');
+        if (!cursor || !viewer) return false;
+        const cursorRect = cursor.getBoundingClientRect();
+        const viewerRect = viewer.getBoundingClientRect();
+        if (!cursorRect.height || !viewerRect.height) return false;
+
+        const queue = [{ value: editor, depth: 0 }];
+        const visited = new WeakSet();
+        let scrollController = null;
+        while (queue.length && !scrollController) {
+            const { value, depth } = queue.shift();
+            if (!value || !['object', 'function'].includes(typeof value) || visited.has(value)) continue;
+            visited.add(value);
+            try {
+                const candidate = value.gz;
+                const ownsViewer = value.$v?.Hg === viewer;
+                const ownsVerticalScrollbar = candidate?.canvas?.parentElement?.id === 'id_vertical_scroll';
+                if (candidate && typeof candidate.scrollBy === 'function' && (ownsViewer || ownsVerticalScrollbar)) {
+                    scrollController = candidate;
+                    break;
+                }
+            } catch {
+                // Ignore cross-object getters exposed by the minified SDK.
+            }
+            if (depth >= 3) continue;
+            let keys = [];
+            try {
+                keys = Object.keys(value).slice(0, 180);
+            } catch {
+                continue;
+            }
+            for (const key of keys) {
+                try {
+                    const child = value[key];
+                    if (child && ['object', 'function'].includes(typeof child)) {
+                        queue.push({ value: child, depth: depth + 1 });
+                    }
+                } catch {
+                    // Some OnlyOffice SDK properties throw while initializing.
+                }
+            }
+        }
+        if (!scrollController) return false;
+
+        const cursorCenter = cursorRect.top + (cursorRect.height / 2);
+        const desiredCenter = viewerRect.top + (viewerRect.height / 2);
+        const delta = cursorCenter - desiredCenter;
+        if (Math.abs(delta) < 24) return true;
+        scrollController.scrollBy(0, delta, false);
+        return true;
+    };
+
     const executeEditorMethod = (method, args = []) => {
         const editor = getEditor();
         if (!editor || typeof editor.executeMethod !== 'function') {
@@ -279,8 +344,9 @@ export function useReviewEditor(state, helpers) {
 
     const buildSuggestionCandidates = (originalText, item = {}) => {
         const candidates = [
-            originalText,
             item.anchor_hint,
+            item.anchorHint,
+            originalText,
             item.original_clause,
             item.clause,
             clauseBodyCandidate(originalText),
@@ -306,6 +372,8 @@ export function useReviewEditor(state, helpers) {
 
     const buildReplacementCandidates = (originalText, item = {}) => {
         const candidates = [
+            item.anchor_hint,
+            item.anchorHint,
             originalText,
             item.original_text,
             item.original_clause,
@@ -364,6 +432,7 @@ export function useReviewEditor(state, helpers) {
                 return;
             }
             await executeEditorMethod('SelectRange', [matched.range]);
+            await centerCommunityEditorSelection();
         } catch (error) {
             ElMessage.error('文档定位失败，请检查 OnlyOffice 是否已完全加载。');
         }
@@ -649,6 +718,7 @@ export function useReviewEditor(state, helpers) {
         editorModeSyncing, editorTrackRevisionsActive, editorModeSyncError,
         getEditor, getCommunityEditor, executeEditorMethod, findTextRange, normalizeCandidate,
         splitCandidateSentences, clauseBodyCandidate, buildSuggestionCandidates, buildReplacementCandidates, findTextRangeByCandidates,
+        centerCommunityEditorSelection,
         ensureEditorReady, previewSuggestion, locateText, replaceTextOnServer,
         markAdoptedText, replaceTextInEditor, reloadEditorConfig, refreshEditorDocument, serverFallback,
         runDocumentMutation,

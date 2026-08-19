@@ -13,6 +13,8 @@ const {
     resolveRevisionGroupInDocx,
     detectRevisionGroupStatusInXml,
     syncRevisionGroupsFromDocx,
+    resolveParagraphMatch,
+    replaceTextInDocx,
 } = require('../services/contractAnalysis/docxEdit');
 
 const baseParagraph = '<w:p><w:pPr><w:spacing w:line="360"/></w:pPr><w:r><w:rPr><w:sz w:val="26"/></w:rPr><w:t>4.6 甲方审核期限不作固定限制。</w:t></w:r></w:p>';
@@ -41,6 +43,39 @@ const writeMinimalDocx = (filePath, documentXml) => {
     zip.addFile('word/document.xml', Buffer.from(documentXml));
     zip.writeZip(filePath);
 };
+
+test('attachment anchor replaces only its paragraph and removes the human instruction wrapper', () => {
+    const attachmentParagraph = '<w:p><w:r><w:t>四、质保期内出现问题，乙方在接到通知后 48 小时内到场维修。</w:t></w:r></w:p>';
+    const mainClauseParagraph = '<w:p><w:r><w:t>7.4 乙方接到维修通知后应在 4 小时内响应、24 小时内到场。</w:t></w:r></w:p>';
+    const documentXml = makeDocumentXml(`${attachmentParagraph}${mainClauseParagraph}`);
+    const compositeOriginal = '附件三：四、质保期内出现问题，乙方在接到通知后 48 小时内到场维修。正文7.4 乙方接到维修通知后应在 4 小时内响应、24 小时内到场。';
+    const anchor = '四、质保期内出现问题，乙方在接到通知后 48 小时内到场维修';
+    const suggestion = '附件三第四条修改为：四、质保期内出现问题，乙方在接到通知后 4 小时内响应、24 小时内到场处理。逾期未处理的，按本合同第七条第7.4款执行。';
+    const resolved = resolveParagraphMatch(documentXml, compositeOriginal, suggestion, [anchor]);
+
+    assert.equal(resolved.paragraph.text, '四、质保期内出现问题，乙方在接到通知后 48 小时内到场维修。');
+    assert.deepEqual(resolved.range, { start: 0, end: resolved.paragraph.text.length });
+    assert.equal(resolved.replacement, '四、质保期内出现问题，乙方在接到通知后 4 小时内响应、24 小时内到场处理。逾期未处理的，按本合同第七条第7.4款执行。');
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'attachment-anchor-'));
+    const filePath = path.join(tempDir, 'contract.docx');
+    try {
+        writeMinimalDocx(filePath, documentXml);
+        const result = replaceTextInDocx(filePath, compositeOriginal, suggestion, [anchor], {
+            mode: 'review',
+            revisionGroupId: 'attachment-group',
+            suggestionId: 'suggestion-8',
+        });
+        const xml = new AdmZip(filePath).getEntry('word/document.xml').getData().toString('utf8');
+        assert.equal(result.matchedText, '四、质保期内出现问题，乙方在接到通知后 48 小时内到场维修。');
+        assert.equal((xml.match(/<w:del\b/g) || []).length, 1);
+        assert.equal((xml.match(/<w:ins\b/g) || []).length, 1);
+        assert.equal(xml.includes('附件三第四条修改为'), false);
+        assert.equal(paragraphText(xml).includes('7.4 乙方接到维修通知后应在 4 小时内响应、24 小时内到场。'), true);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
 
 test('replacement revision persists one stable suggestion group with a delete/insert pair', () => {
     const result = replaceTextWithRevisionGroup(
