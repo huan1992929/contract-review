@@ -796,6 +796,24 @@ const coversWholeParagraphIgnoringTerminalPunctuation = (paragraphTextValue, nee
     return Boolean(paragraph && candidate && paragraph === candidate);
 };
 
+// A short clause-numbered anchor (for example "7.3 本工程整体质量保修期…")
+// identifies the paragraph, not merely the prefix to overwrite. If the AI
+// suggestion is also a complete clause with the same number, retaining the
+// unmatched paragraph tail creates duplicated text after the inserted
+// revision. Promote that match to the complete paragraph so review mode emits
+// one paired deletion/insertion for the whole clause.
+const shouldReplaceWholeClauseParagraph = (paragraphTextValue, needle, replacement, range) => {
+    if (!range || range.start !== 0 || range.end >= String(paragraphTextValue || '').length) return false;
+    const paragraphInfo = parseClausePrefix(paragraphTextValue);
+    const needleInfo = parseClausePrefix(needle);
+    const replacementInfo = parseClausePrefix(stripReplacementInstructionPrefix(replacement));
+    return Boolean(
+        paragraphInfo.clauseNo
+        && paragraphInfo.clauseNo === needleInfo.clauseNo
+        && paragraphInfo.clauseNo === replacementInfo.clauseNo,
+    );
+};
+
 const resolveParagraphMatch = (documentXml, originalText, suggestedText, originalCandidates = []) => {
     const paragraphs = [];
     const pattern = /<w:p\b[^>]*>[\s\S]*?<\/w:p>/g;
@@ -823,6 +841,9 @@ const resolveParagraphMatch = (documentXml, originalText, suggestedText, origina
                     range = { start: 0, end: paragraph.text.length };
                 }
                 let replacement = stripReplacementInstructionPrefix(suggestedText);
+                if (shouldReplaceWholeClauseParagraph(paragraph.text, needle, replacement, range)) {
+                    range = { start: 0, end: paragraph.text.length };
+                }
                 const replacementInfo = parseClausePrefix(replacement);
                 if (bodyOnly && replacementInfo.clauseNo === source.clauseNo) replacement = replacementInfo.body;
                 if (!bodyOnly && source.clauseNo && !replacementInfo.clauseNo) {

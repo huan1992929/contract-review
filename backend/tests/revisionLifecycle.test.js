@@ -101,6 +101,38 @@ test('replacement revision persists one stable suggestion group with a delete/in
     assert.match(result.xml, /<w:ins w:id="21"/);
 });
 
+test('clause-numbered prefix anchor replaces the complete clause without duplicated tail', () => {
+    const original = '7.3 本工程整体质量保修期为竣工验收合格之日起 24 个月。防水工程保修期为 5 年，苗木成活养护期按附件三执行。';
+    const anchor = '7.3 本工程整体质量保修期为竣工验收合格之日起 24 个月';
+    const compositeOriginal = `${original} 附件三：一、整体工程保修期为 12 个月。三、防水工程保修期为 2 年。`;
+    const suggestion = '7.3 本工程整体质量保修期为竣工验收合格之日起 24 个月。防水工程保修期为 5 年，苗木成活养护期按附件三执行。本合同附件三与本条不一致的，以本条为准。';
+    const documentXml = makeDocumentXml(`<w:p><w:r><w:t>${original}</w:t></w:r></w:p>`);
+    const resolved = resolveParagraphMatch(documentXml, compositeOriginal, suggestion, [anchor]);
+
+    assert.deepEqual(resolved.range, { start: 0, end: original.length });
+    assert.equal(resolved.matchedText, original);
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whole-clause-anchor-'));
+    const filePath = path.join(tempDir, 'contract.docx');
+    try {
+        writeMinimalDocx(filePath, documentXml);
+        const result = replaceTextInDocx(filePath, compositeOriginal, suggestion, [anchor], {
+            mode: 'review',
+            revisionGroupId: 'whole-clause-group',
+            suggestionId: 'suggestion-7.3',
+        });
+        const xml = new AdmZip(filePath).getEntry('word/document.xml').getData().toString('utf8');
+        assert.equal((xml.match(/<w:del\b/g) || []).length, 1);
+        assert.equal((xml.match(/<w:ins\b/g) || []).length, 1);
+        assert.equal(result.revisionGroup.original_text, original);
+        assert.equal(result.revisionGroup.suggested_text, suggestion);
+        assert.equal(paragraphText(xml), suggestion);
+        assert.equal((paragraphText(xml).match(/7\.3/g) || []).length, 1);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
 test('accepting a replacement revision removes original and revision wrappers', () => {
     const revised = replaceTextWithRevisionGroup(baseParagraph, { start: 4, end: 17 }, '甲方应在60日内完成审核。', {
         revisionId: 30,

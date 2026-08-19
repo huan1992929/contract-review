@@ -20,7 +20,6 @@
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item command="review-docx">审阅版 · Word（保留修订）</el-dropdown-item>
-                <el-dropdown-item command="review-pdf">审阅版 · PDF</el-dropdown-item>
                 <el-dropdown-item divided command="final-docx">最终版 · Word（接受全部修订）</el-dropdown-item>
                 <el-dropdown-item command="final-pdf">最终版 · PDF</el-dropdown-item>
               </el-dropdown-menu>

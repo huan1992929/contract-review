@@ -1,15 +1,15 @@
 <template>
   <div>
     <div v-if="suggestions.length" class="mb-3 flex items-center justify-between gap-2">
-      <div class="suggestion-indexes" role="group" aria-label="修改建议选择与处理状态">
+      <div class="suggestion-indexes" role="group" aria-label="修改建议快速定位与处理状态">
         <button
           v-for="(item, index) in suggestions"
           :key="'select-ms-' + index"
           type="button"
-          :class="['suggestion-index', suggestionIndexClass(item, index), selectedSuggestionIndexes.includes(index) ? 'is-selected' : '']"
+          :class="['suggestion-index', suggestionIndexClass(item, index)]"
           :title="suggestionIndexLabel(item, index)"
           :aria-label="suggestionIndexLabel(item, index)"
-          :aria-pressed="selectedSuggestionIndexes.includes(index)"
+          :aria-pressed="isSuggestionExpanded(index)"
           :aria-controls="`suggestion-card-${index}`"
           @click="activateSuggestion(item, index)"
         >
@@ -18,8 +18,8 @@
       </div>
       <div class="flex items-center gap-2">
         <span v-if="isPdfContract" class="text-xs text-amber-600">PDF 不支持采纳</span>
-        <button @click="applySelectedSuggestions" :disabled="batchApplying || isPdfContract || selectedSuggestionIndexes.length === 0" class="px-3 py-1.5 text-xs font-medium text-white bg-primary rounded hover:bg-primary-dark disabled:opacity-50 disabled:cursor-not-allowed">
-          {{ batchApplying ? '批量处理中...' : (reviewApplyMode === 'review' ? '加入审阅修订' : '直接编辑所选') }}
+        <button @click="applyAllSuggestions" :disabled="batchApplying || isPdfContract || !hasUnresolvedSuggestions" class="px-3 py-1.5 text-xs font-medium text-white bg-primary rounded hover:bg-primary-dark disabled:opacity-50 disabled:cursor-not-allowed">
+          {{ batchApplying ? (reviewApplyMode === 'review' ? '正在修订全部风险...' : '正在编辑全部风险...') : (reviewApplyMode === 'review' ? '一键修订全部风险' : '一键编辑全部风险') }}
         </button>
       </div>
     </div>
@@ -188,10 +188,10 @@ export default {
     const review = inject('review');
     const {
       reviewData, showPlainLanguage, reviewApplyMode, isPdfContract,
-      selectedSuggestionIndexes, batchApplying,
+      batchApplying,
       suggestionTitle, suggestionOriginal, suggestionText, suggestionReason, suggestionCitations, isMissingClauseSuggestion,
       locateText, addDocComment, previewSuggestion, adoptSuggestion,
-      applySelectedSuggestions, isSuggestionApplied, suggestionApplicationStatus, toggleNegotiation, adoptFallbackOption,
+      applyAllSuggestions, isSuggestionApplied, suggestionApplicationStatus, toggleNegotiation, adoptFallbackOption,
       normalizeSeverity,
     } = review;
 
@@ -200,6 +200,7 @@ export default {
       ? reviewData.modification_suggestions
       : []);
     const expandedSuggestionIndexes = ref([]);
+    const hasUnresolvedSuggestions = computed(() => suggestions.value.some((item) => !isSuggestionApplied(item)));
     const isSuggestionResolved = (item) => ['pending_review', 'accepted', 'applied'].includes(suggestionApplicationStatus(item));
     const suggestionSeverity = (item, index) => {
       const direct = item?.severity || item?.risk_level;
@@ -264,10 +265,6 @@ export default {
       }
     };
     const activateSuggestion = async (item, index) => {
-      const selected = new Set(selectedSuggestionIndexes.value);
-      if (selected.has(index)) selected.delete(index);
-      else selected.add(index);
-      selectedSuggestionIndexes.value = [...selected].sort((a, b) => a - b);
       await expandAndLocateSuggestion(item, index);
     };
     const toggleSuggestion = async (item, index) => {
@@ -282,15 +279,14 @@ export default {
       () => suggestions.value.length,
       (length) => {
         expandedSuggestionIndexes.value = expandedSuggestionIndexes.value.filter((index) => index < length);
-        selectedSuggestionIndexes.value = selectedSuggestionIndexes.value.filter((index) => index < length);
       },
     );
     return {
       reviewData, suggestions, showPlainLanguage, reviewApplyMode, isPdfContract,
-      selectedSuggestionIndexes, batchApplying,
+      batchApplying, hasUnresolvedSuggestions,
       suggestionTitle, suggestionOriginal, suggestionText, suggestionReason, suggestionCitations, isMissingClauseSuggestion,
       locateText, addDocComment, previewSuggestion, adoptSuggestion,
-      applySelectedSuggestions, isSuggestionApplied, isSuggestionResolved, toggleNegotiation, adoptFallbackOption,
+      applyAllSuggestions, isSuggestionApplied, isSuggestionResolved, toggleNegotiation, adoptFallbackOption,
       suggestionIndexClass, suggestionIndexLabel, suggestionStatusLabel, suggestionActionLabel,
       isSuggestionExpanded, activateSuggestion, toggleSuggestion,
     };
@@ -341,11 +337,6 @@ export default {
 
 .suggestion-index:hover {
   transform: translateY(-1px);
-}
-
-.suggestion-index.is-selected {
-  border-color: #163b37;
-  box-shadow: 0 0 0 2px rgba(22, 59, 55, 0.17);
 }
 
 .suggestion-index:focus-visible {

@@ -16,7 +16,6 @@ export function useReviewActions(state, editor, helpers) {
     } = editor;
     const { suggestionOriginal, suggestionText, suggestionTitle, isMissingClauseSuggestion } = helpers;
 
-    const selectedSuggestionIndexes = ref([]);
     const batchApplying = ref(false);
     const diffItems = ref([]);
     const diffLoading = ref(false);
@@ -228,31 +227,32 @@ export function useReviewActions(state, editor, helpers) {
         URL.revokeObjectURL(url);
     };
 
-    const applySelectedSuggestions = async () => {
-        const indexes = selectedSuggestionIndexes.value;
-        if (!indexes.length) {
-            ElMessage.warning('请选择要批量采纳的修改建议。');
+    const applyAllSuggestions = async () => {
+        const indexes = (reviewData.modification_suggestions || []).map((_, index) => index);
+        const pendingItems = indexes.map((index) => ({
+            index,
+            item: reviewData.modification_suggestions[index],
+        })).filter(({ item }) => item && !isSuggestionApplied(item));
+        if (!pendingItems.length) {
+            ElMessage.info('全部风险建议均已处理。');
             return;
         }
         batchApplying.value = true;
         try {
             if (!await ensureReviewApplyMode()) return;
-            const selectedItems = indexes.map((index) => ({
-                index,
-                item: reviewData.modification_suggestions[index],
-            })).filter(({ item }) => item && !isSuggestionApplied(item));
-            const appendItems = selectedItems.filter(({ item }) => isMissingClauseSuggestion(item));
-            const replacementItems = selectedItems.filter(({ item }) => !isMissingClauseSuggestion(item));
+            const appendItems = pendingItems.filter(({ item }) => isMissingClauseSuggestion(item));
+            const replacementItems = pendingItems.filter(({ item }) => !isMissingClauseSuggestion(item));
             let succeededCount = 0;
             let failedCount = 0;
             let totalReplacements = 0;
             let latestEditorConfig = null;
             let latestDocumentKey = contract.editorConfig?.document?.key;
+            let restoreTarget = null;
 
             // Serialize the whole batch behind one editor save. Re-saving the
             // stale browser session after the server has already produced a new
             // DOCX version can overwrite accepted revisions.
-            if (selectedItems.length) {
+            if (pendingItems.length) {
                 await forceSaveCurrentDocument(true);
                 await new Promise((resolve) => setTimeout(resolve, 650));
             }
@@ -279,6 +279,9 @@ export function useReviewActions(state, editor, helpers) {
                 (response.data.results || []).forEach((result) => {
                     if (result.ok) {
                         const target = replacementItems[result.index].item;
+                        if (!restoreTarget) {
+                            restoreTarget = { text: result.replacementText || suggestionText(target) };
+                        }
                         applyResultToSuggestion(target, suggestionOriginal(target), suggestionText(target), {
                             ...result,
                             applicationStatus: response.data.applicationStatus || response.data.application_status,
@@ -303,6 +306,9 @@ export function useReviewActions(state, editor, helpers) {
                     });
                     latestEditorConfig = response.data.editorConfig || latestEditorConfig;
                     latestDocumentKey = response.data.editorConfig?.document?.key || latestDocumentKey;
+                    if (!restoreTarget) {
+                        restoreTarget = { text: response.data.insertedText || suggestionText(item) };
+                    }
                     applyResultToSuggestion(item, suggestionOriginal(item), suggestionText(item), response.data);
                     succeededCount += 1;
                 } catch {
@@ -310,19 +316,13 @@ export function useReviewActions(state, editor, helpers) {
                 }
             }
 
-            if (!selectedItems.length) {
-                ElMessage.info('所选建议均已处理。');
-                return;
-            }
-
             selectedSuggestionPreview.value = {
-                before: '批量处理所选修改建议',
+                before: '一键处理全部未处理风险建议',
                 after: `成功 ${succeededCount} 项${totalReplacements ? `，替换 ${totalReplacements} 处` : ''}${failedCount ? `，失败 ${failedCount} 项` : ''}`,
                 status: reviewApplyMode.value === 'review' ? '已加入审阅修订' : '已直接写入合同',
             };
-            await loadLatestDiff();
             if (latestEditorConfig) {
-                await reloadEditorConfig(latestEditorConfig);
+                await reloadEditorConfig(latestEditorConfig, undefined, restoreTarget);
             }
         } catch (error) {
             ElMessage.error(error.response?.data?.error || '批量采纳失败。');
@@ -391,10 +391,10 @@ export function useReviewActions(state, editor, helpers) {
     };
 
     return {
-        selectedSuggestionIndexes, batchApplying, diffItems, diffLoading, exportingDocument,
+        batchApplying, diffItems, diffLoading, exportingDocument,
         addDocComment, adoptSuggestion, isSuggestionApplied, isSuggestionPendingReview, isSuggestionEffective,
         normalizeSuggestionApplicationStatus, suggestionApplicationStatus,
         applySuggestionStatusPayload, setSuggestionReviewDecision, downloadBlob,
-        applySelectedSuggestions, loadLatestDiff, exportReport, downloadPdfAnnotations, exportContractDocument,
+        applyAllSuggestions, loadLatestDiff, exportReport, downloadPdfAnnotations, exportContractDocument,
     };
 }

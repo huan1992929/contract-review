@@ -25,7 +25,7 @@ test('ONLYOFFICE callback URLs are rewritten to the internal document server', (
     assert.equal(normalized, 'http://onlyoffice/cache/files/output.docx?token=abc');
 });
 
-test('ONLYOFFICE review mode enables visible tracked changes while edit mode stays direct', () => {
+test('ONLYOFFICE review mode tracks changes without opening the review navigator', () => {
     const contract = {
         document_key: 'doc-key',
         original_filename: 'contract.docx',
@@ -35,7 +35,7 @@ test('ONLYOFFICE review mode enables visible tracked changes while edit mode sta
     const reviewConfig = buildOnlyOfficeConfig(contract, 'docx', { reviewMode: true });
     const editConfig = buildOnlyOfficeConfig(contract, 'docx');
     assert.equal(reviewConfig.editorConfig.customization.review.trackChanges, true);
-    assert.equal(reviewConfig.editorConfig.customization.review.showReviewChanges, true);
+    assert.equal(reviewConfig.editorConfig.customization.review.showReviewChanges, false);
     assert.equal(editConfig.editorConfig.customization.review.trackChanges, false);
 });
 

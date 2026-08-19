@@ -87,7 +87,11 @@ const buildOnlyOfficeConfig = (contractRecord, ext = 'docx', options = {}) => {
                 goback: false,
                 review: {
                     hideReviewDisplay: false,
-                    showReviewChanges: reviewMode,
+                    // Track changes remains enabled, but the floating
+                    // "审查更改" navigator interrupts the contract workflow.
+                    // Users can still accept/reject changes inline in the
+                    // document and from the collaboration toolbar.
+                    showReviewChanges: false,
                     reviewDisplay: 'markup',
                     trackChanges: reviewMode,
                     hoverMode: false,

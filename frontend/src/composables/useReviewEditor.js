@@ -438,6 +438,30 @@ export function useReviewEditor(state, helpers) {
         }
     };
 
+    const locateTextAfterReload = async (target = {}) => {
+        const text = String(target?.text || '').trim();
+        if (!text) return false;
+        const clauseLead = text.match(/^\s*\d+(?:\.\d+)+\s+[^。；;!?！？]{6,120}/)?.[0]?.trim();
+        const candidates = buildSuggestionCandidates(text, {})
+            .concat([clauseLead, text.slice(0, 120), text.slice(0, 80)])
+            .filter(Boolean);
+        for (let attempt = 0; attempt < 6; attempt += 1) {
+            try {
+                const matched = await findTextRangeByCandidates(candidates);
+                if (matched?.range) {
+                    await executeEditorMethod('SelectRange', [matched.range]);
+                    await centerCommunityEditorSelection();
+                    return true;
+                }
+            } catch {
+                // The document frame may still be rebuilding its searchable
+                // text model immediately after onDocumentReady.
+            }
+            await new Promise((resolve) => setTimeout(resolve, 220));
+        }
+        return false;
+    };
+
     const replaceTextOnServer = async (originalText, suggestedText, item = {}, options = {}) => {
         const response = await api.replaceContractText(contract.id, {
             originalText,
@@ -519,7 +543,7 @@ export function useReviewEditor(state, helpers) {
         else waiter.resolve(true);
     };
 
-    const reloadEditorConfig = async (nextConfig, message = '正在重新载入修订后的合同...') => {
+    const reloadEditorConfig = async (nextConfig, message = '正在重新载入修订后的合同...', restoreTarget = null) => {
         if (!nextConfig) return false;
         editorReloading.value = true;
         editorReloadMessage.value = message;
@@ -542,7 +566,9 @@ export function useReviewEditor(state, helpers) {
         // and keeps the review page, filters, scroll and history state intact.
         contract.editorConfig = JSON.parse(JSON.stringify(nextConfig));
         await nextTick();
-        return ready;
+        await ready;
+        if (restoreTarget?.text) await locateTextAfterReload(restoreTarget);
+        return true;
     };
 
     const runDocumentMutation = (task) => {
@@ -583,7 +609,9 @@ export function useReviewEditor(state, helpers) {
             await forceSaveCurrentDocument(true);
             await new Promise((resolve) => setTimeout(resolve, 650));
             const result = await replaceTextOnServer(originalText, suggestedText, item, options);
-            await reloadEditorConfig(result.editorConfig);
+            await reloadEditorConfig(result.editorConfig, undefined, {
+                text: result.replacementText || suggestedText,
+            });
             onSuccess?.(result);
         } catch (error) {
             const message = error.message === 'EDITOR_RELOAD_TIMEOUT'
@@ -613,7 +641,9 @@ export function useReviewEditor(state, helpers) {
                 targetHeading: options.targetHeading || '',
                 expectedDocumentKey: contract.editorConfig?.document?.key,
             });
-            await reloadEditorConfig(response.data?.editorConfig);
+            await reloadEditorConfig(response.data?.editorConfig, undefined, {
+                text: response.data?.insertedText || content,
+            });
             onSuccess?.({ appended: true, ...response.data });
         } catch (err) {
             const msg = err.response?.data?.error || '新增条款失败。';
@@ -719,7 +749,7 @@ export function useReviewEditor(state, helpers) {
         getEditor, getCommunityEditor, executeEditorMethod, findTextRange, normalizeCandidate,
         splitCandidateSentences, clauseBodyCandidate, buildSuggestionCandidates, buildReplacementCandidates, findTextRangeByCandidates,
         centerCommunityEditorSelection,
-        ensureEditorReady, previewSuggestion, locateText, replaceTextOnServer,
+        ensureEditorReady, previewSuggestion, locateText, locateTextAfterReload, replaceTextOnServer,
         markAdoptedText, replaceTextInEditor, reloadEditorConfig, refreshEditorDocument, serverFallback,
         runDocumentMutation,
         replaceTextInEditorFinal, appendClauseInEditorFinal,
