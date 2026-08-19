@@ -1,0 +1,20 @@
+{
+  "schema": "official_case_v1",
+  "source_id": "official-case:spc:2025-procurement-fiscal-approval",
+  "title": "采购合同付款不能以财政审批迟延为免责理由",
+  "category": "买卖合同纠纷",
+  "case_no": null,
+  "publication_form": "最高人民法院规范涉企执法司法专项行动典型案例",
+  "court": "人民法院",
+  "published_at": "2025-07-31",
+  "verified_at": "2026-08-19",
+  "jurisdiction": "CN",
+  "official_source": "最高人民法院",
+  "official_url": "https://www.court.gov.cn/zixun/xiangqing/472501.html",
+  "applicable_contract_types": ["采购类", "服务类"],
+  "facts": "医疗机构采购货物后，以财政审批或资金拨付流程尚未完成为由迟延支付货款。",
+  "issue": "内部或财政审批流程能否当然免除采购方的合同付款责任。",
+  "reasoning": "合同相对方已经履行交付义务，采购方内部资金审批和拨付安排原则上不能对抗合同约定的付款义务。",
+  "result": "法院支持供应方关于支付货款及相应责任的请求。",
+  "review_guidance": "采购付款节点应以验收、发票等可控条件为核心；不得将不确定的内部审批或资金来源设置为无限期顺延且免责的付款条件。"
+}

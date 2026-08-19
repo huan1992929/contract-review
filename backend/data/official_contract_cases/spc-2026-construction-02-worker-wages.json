@@ -1,0 +1,20 @@
+{
+  "schema": "official_case_v1",
+  "source_id": "official-case:spc:2026-construction-02",
+  "title": "建设工程领域农民工工资支付责任",
+  "category": "建设工程施工合同纠纷",
+  "case_no": null,
+  "publication_form": "最高人民法院建设工程质量保护典型案例之二",
+  "court": "人民法院",
+  "published_at": "2026-06-29",
+  "verified_at": "2026-08-19",
+  "jurisdiction": "CN",
+  "official_source": "最高人民法院",
+  "official_url": "https://www.court.gov.cn/zixun/xiangqing/504211.html",
+  "applicable_contract_types": ["施工类", "服务类"],
+  "facts": "建设工程存在违法分包、转包等情形，实际施工人员的工资长期未获支付。",
+  "issue": "用工主体及相关施工单位应如何承担工资支付责任。",
+  "reasoning": "工程发包、承包和用工链条不能成为拖欠农民工工资的理由，应依据实际用工、工程款支付和法定保障义务确定责任。",
+  "result": "法院依法支持劳动者的合理工资请求，并明确相关责任主体。",
+  "review_guidance": "施工合同应设置实名制、工资专户、总包代发、支付凭证和分包穿透管理条款；付款审批不得替代工资保障义务。"
+}

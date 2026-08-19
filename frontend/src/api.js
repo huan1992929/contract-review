@@ -235,6 +235,14 @@ export default {
         return apiClient.get('/knowledge/list', { params });
     },
 
+    listKnowledgeCandidates(params = {}) {
+        return apiClient.get('/knowledge/candidates', { params });
+    },
+
+    decideKnowledgeCandidate(payload) {
+        return apiClient.post('/knowledge/candidates/decision', payload);
+    },
+
     importKnowledge(laws) {
         return apiClient.post('/knowledge/import', { laws });
     },

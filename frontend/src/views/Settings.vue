@@ -21,6 +21,10 @@
         <ReviewTemplatesTab />
       </el-tab-pane>
 
+      <el-tab-pane label="境外资料审批" name="foreign-approval">
+        <KnowledgeCandidatePanel />
+      </el-tab-pane>
+
       <el-tab-pane label="标准条款库" name="standard-clauses">
         <StandardClausesTab />
       </el-tab-pane>
@@ -37,6 +41,7 @@ import BatchImportPanel from '../components/settings/BatchImportPanel.vue';
 import LawVersionPanel from '../components/settings/LawVersionPanel.vue';
 import ReviewTemplatesTab from '../components/settings/ReviewTemplatesTab.vue';
 import StandardClausesTab from '../components/settings/StandardClausesTab.vue';
+import KnowledgeCandidatePanel from '../components/settings/KnowledgeCandidatePanel.vue';
 
 export default {
   name: 'SettingsView',
@@ -49,6 +54,7 @@ export default {
     LawVersionPanel,
     ReviewTemplatesTab,
     StandardClausesTab,
+    KnowledgeCandidatePanel,
   },
   setup() {
     const activeTab = ref('knowledge');

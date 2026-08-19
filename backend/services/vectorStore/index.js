@@ -192,7 +192,7 @@ const seedCasesFromJson = async (onProgress, { skipMilvus = false } = {}) => {
 
     const files = listCaseJsonFiles();
     if (files.length === 0) {
-        console.warn(`[DB Init] No case JSON files found under ${process.env.CASE_SEED_DIR || 'candidate_55192'}.`);
+        console.warn(`[DB Init] No case JSON files found under ${process.env.CASE_SEED_DIR || 'official_contract_cases'}.`);
         return { imported: 0, chunks: 0, files: 0 };
     }
 
@@ -272,6 +272,43 @@ const deleteKnowledgeDocuments = async ({ ids = [], sourceIds = [], sourceType =
     await deleteMilvusRows(rows);
     await db('vector_documents').whereIn('id', rows.map((row) => row.id)).del();
     return { deleted: rows.length, vectorStore: state.milvusReady ? 'milvus' : 'relational-fallback' };
+};
+
+// 可恢复隔离知识条目：从 Milvus 正式召回集合删除，但在 PostgreSQL 中保留原文、
+// 向量和隔离原因。用于处置历史误入库案例，避免不可逆物理删除。
+const quarantineKnowledgeDocuments = async ({ sourceType = '', sourceNameIncludes = '', reason = '', operator = 'system' } = {}) => {
+    await ensureVectorStore();
+    if (!sourceType && !sourceNameIncludes) {
+        throw new Error('At least one quarantine filter is required.');
+    }
+    let query = db('vector_documents');
+    if (sourceType) query = query.where('source_type', sourceType);
+    if (sourceNameIncludes) query = query.where('source_name', 'like', `%${sourceNameIncludes}%`);
+    const rows = await query.select('*');
+    if (rows.length === 0) return { quarantined: 0 };
+
+    await deleteMilvusRows(rows);
+    await db.transaction(async (trx) => {
+        for (const row of rows) {
+            let metadata = {};
+            try { metadata = JSON.parse(row.metadata || '{}'); } catch { metadata = {}; }
+            await trx('vector_documents').where({ id: row.id }).update({
+                source_type: `quarantined_${row.source_type}`,
+                law_status: '已隔离',
+                metadata: JSON.stringify({
+                    ...metadata,
+                    quarantine: {
+                        original_source_type: row.source_type,
+                        reason: reason || '与合同审查业务无关',
+                        operator,
+                        quarantined_at: new Date().toISOString(),
+                    },
+                }),
+                updated_at: trx.fn.now(),
+            });
+        }
+    });
+    return { quarantined: rows.length };
 };
 
 // 清空所有向量数据（用于重建），同时清空 SQLite 和 Milvus
@@ -472,6 +509,7 @@ module.exports = {
     listKnowledgeDocuments,
     importKnowledgeEntries,
     deleteKnowledgeDocuments,
+    quarantineKnowledgeDocuments,
     clearAllVectorDocuments,
     syncAllVectorDocuments,
     splitTextIntoChunks,

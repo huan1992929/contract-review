@@ -36,6 +36,10 @@ const {
 } = require('../services/vectorStore');
 const { parseLegalMarkdown, parseLegalMarkdownFile } = require('../services/legalMarkdownParser');
 const lawSync = require('../services/lawSync');
+const {
+    listKnowledgeCandidates,
+    decideKnowledgeCandidate,
+} = require('../services/knowledgeGovernance');
 
 const router = express.Router();
 const BATCH_IMPORT_FILE_LIMIT = Math.max(1, Number(process.env.KNOWLEDGE_BATCH_FILE_LIMIT || 200));
@@ -139,6 +143,44 @@ router.get('/list', async (req, res) => {
     } catch (error) {
         console.error('[ERROR] Knowledge list failed:', error);
         res.status(500).json({ error: 'Knowledge list failed.' });
+    }
+});
+
+// 境外法规/案例候选区。候选资料不参与正式合同审查，只有法务人工审批通过后
+// 才会复制为正式 law/case 条目，并保留审批审计记录。
+router.get('/candidates', async (req, res) => {
+    try {
+        const result = await listKnowledgeCandidates({
+            page: req.query.page,
+            pageSize: req.query.pageSize,
+            jurisdiction: req.query.jurisdiction || '',
+            status: req.query.status || '',
+            sourceType: req.query.type || '',
+        });
+        res.json(result);
+    } catch (error) {
+        console.error('[ERROR] Candidate knowledge list failed:', error);
+        res.status(500).json({ error: 'Candidate knowledge list failed.' });
+    }
+});
+
+router.post('/candidates/decision', async (req, res) => {
+    try {
+        const result = await decideKnowledgeCandidate({
+            sourceId: String(req.body?.source_id || '').trim(),
+            decision: String(req.body?.decision || '').trim(),
+            note: String(req.body?.note || '').trim(),
+            verification: req.body?.verification || {},
+            reviewer: {
+                id: req.auth?.sub,
+                username: req.auth?.username,
+                role: req.auth?.role,
+            },
+        });
+        res.json(result);
+    } catch (error) {
+        console.error('[ERROR] Candidate knowledge decision failed:', error);
+        res.status(error.statusCode || 400).json({ error: error.message, readiness: error.readiness });
     }
 });
 

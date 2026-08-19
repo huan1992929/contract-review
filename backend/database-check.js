@@ -64,7 +64,7 @@ async function resetAndRebuildDatabase() {
           username: seedUsername,
           password_hash: passwordHash,
           display_name: process.env.APP_AUTH_DISPLAY_NAME || '众安测试账号',
-          role: 'reviewer',
+          role: process.env.APP_AUTH_ROLE || 'reviewer',
           is_active: true,
           updated_at: db.fn.now(),
         });
@@ -74,7 +74,7 @@ async function resetAndRebuildDatabase() {
           username: seedUsername,
           password_hash: passwordHash,
           display_name: process.env.APP_AUTH_DISPLAY_NAME || '众安测试账号',
-          role: 'reviewer',
+          role: process.env.APP_AUTH_ROLE || 'reviewer',
           is_active: true,
         });
       }
@@ -251,6 +251,24 @@ async function resetAndRebuildDatabase() {
             table.unique(['template_id', 'version']);
         });
         console.log('[DB Init] New `template_versions` table created successfully.');
+    }
+
+    const hasKnowledgeApprovalAuditTable = await db.schema.hasTable('knowledge_approval_audit');
+    if (!hasKnowledgeApprovalAuditTable) {
+        console.log('[DB Init] Creating new `knowledge_approval_audit` table...');
+        await db.schema.createTable('knowledge_approval_audit', (table) => {
+            table.increments('id').primary();
+            table.string('candidate_source_id', 512).notNullable().index();
+            table.string('candidate_source_type', 64).notNullable();
+            table.string('decision', 32).notNullable();
+            table.integer('reviewer_user_id').unsigned().references('id').inTable('users').onDelete('SET NULL');
+            table.string('reviewer_username', 128);
+            table.string('reviewer_role', 64);
+            table.text('review_note');
+            table.jsonb('readiness_snapshot');
+            table.string('promoted_source_id', 512);
+            table.timestamp('created_at').defaultTo(db.fn.now());
+        });
     }
 
     await ensureVectorStore();

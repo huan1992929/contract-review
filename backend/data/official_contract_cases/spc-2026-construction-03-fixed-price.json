@@ -1,0 +1,20 @@
+{
+  "schema": "official_case_v1",
+  "source_id": "official-case:spc:2026-construction-03",
+  "title": "固定总价合同解除后已完工程价款的确定",
+  "category": "建设工程施工合同纠纷",
+  "case_no": null,
+  "publication_form": "最高人民法院建设工程质量保护典型案例之三",
+  "court": "人民法院",
+  "published_at": "2026-06-29",
+  "verified_at": "2026-08-19",
+  "jurisdiction": "CN",
+  "official_source": "最高人民法院",
+  "official_url": "https://www.court.gov.cn/zixun/xiangqing/504211.html",
+  "applicable_contract_types": ["施工类"],
+  "facts": "固定总价施工合同在工程未全部完成时解除，双方对已完工程价款计算方式产生争议。",
+  "issue": "无法直接适用合同固定总价时，已完工程价款应如何合理确定。",
+  "reasoning": "可结合合同约定、实际完成工程量、已完部分与整体工程的价值比例等因素确定价款，避免机械套用定额导致合同风险分配失衡。",
+  "result": "法院以能够反映已完工程价值的比例方法确定应付工程价款。",
+  "review_guidance": "固定总价合同应预先约定中途解除时的计量口径、已完比例确认、材料设备归属、签证资料和结算程序。"
+}

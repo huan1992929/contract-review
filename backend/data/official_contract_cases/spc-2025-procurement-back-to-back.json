@@ -1,0 +1,20 @@
+{
+  "schema": "official_case_v1",
+  "source_id": "official-case:spc:2025-procurement-back-to-back",
+  "title": "采购合同背靠背付款条款的效力审查",
+  "category": "买卖合同纠纷",
+  "case_no": null,
+  "publication_form": "最高人民法院规范涉企执法司法专项行动典型案例",
+  "court": "人民法院",
+  "published_at": "2025-07-31",
+  "verified_at": "2026-08-19",
+  "jurisdiction": "CN",
+  "official_source": "最高人民法院",
+  "official_url": "https://www.court.gov.cn/zixun/xiangqing/472501.html",
+  "applicable_contract_types": ["采购类", "施工类"],
+  "facts": "施工企业向电缆供应商采购货物，并以其尚未收到上游工程款为由援引背靠背条款拒付货款。",
+  "issue": "将上游付款作为向供应商付款前提的约定能否排除采购方的到期付款义务。",
+  "reasoning": "采购方不能通过不合理的背靠背安排将自身经营和回款风险全部转嫁给中小供应商；相关约定不应成为无限期拒付货款的依据。",
+  "result": "法院未支持采购方以未收到上游款项为由拒付供应商货款。",
+  "review_guidance": "审查付款条件是否受第三方控制；如确需联动，应限定客观事由、通知义务、最长顺延期和最终付款日，避免无限期背靠背。"
+}
