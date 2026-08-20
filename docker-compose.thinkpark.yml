@@ -60,6 +60,7 @@ services:
       context: .
       dockerfile: deploy/Dockerfile.frontend
       args:
+        NGINX_CONFIG: deploy/nginx.thinkpark.conf
         BASE_URL: /contract-review/
         VITE_APP_BACKEND_API_URL: ""
         VITE_APP_ONLYOFFICE_URL: /onlyoffice/
