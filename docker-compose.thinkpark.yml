@@ -2,7 +2,7 @@ name: thinkpark-contract-review
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
     restart: unless-stopped
     env_file:
       - ${CONTRACT_REVIEW_ENV_FILE:-./deploy/thinkpark.env}
