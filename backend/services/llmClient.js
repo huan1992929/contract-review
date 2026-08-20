@@ -60,6 +60,10 @@ const createChatCompletion = async (options, requestOptions = {}) => {
             }, {
                 timeout,
                 ...sdkRequestOptions,
+                // Retry only at this wrapper layer. The OpenAI SDK
+                // otherwise adds another retry loop, multiplying a timeout
+                // into as many as nine upstream inference requests.
+                maxRetries: 0,
             });
         } catch (error) {
             lastError = error;
@@ -88,6 +92,7 @@ const createVisionCompletion = async (options, requestOptions = {}) => {
             }, {
                 timeout,
                 ...sdkRequestOptions,
+                maxRetries: 0,
             });
         } catch (error) {
             lastError = error;

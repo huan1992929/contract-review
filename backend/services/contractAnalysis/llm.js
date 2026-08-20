@@ -22,15 +22,28 @@ const cleanJsonResponse = (text) => {
     return JSON.parse(clean);
 };
 
-const callJsonLLM = async (prompt) => {
+const parseNonNegativeNumber = (value, fallback) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+};
+
+const getReviewLlmRequestOptions = (env = process.env) => ({
+    // Full contract review prompts are materially slower than pre-analysis.
+    // ThinkPark's production model commonly completes in 3-4 minutes.
+    timeout: parseNonNegativeNumber(env.REVIEW_LLM_TIMEOUT_MS, 300000),
+    maxRetries: parseNonNegativeNumber(env.REVIEW_LLM_MAX_RETRIES, 0),
+});
+
+const callJsonLLM = async (prompt, requestOptions = {}) => {
     const completion = await createChatCompletion({
         messages: [{ role: 'user', content: prompt }],
         response_format: { type: 'json_object' },
-    });
+    }, requestOptions);
     return cleanJsonResponse(completion.choices[0].message.content);
 };
 
 module.exports = {
     cleanJsonResponse,
+    getReviewLlmRequestOptions,
     callJsonLLM,
 };

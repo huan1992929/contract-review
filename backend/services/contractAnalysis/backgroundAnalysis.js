@@ -28,7 +28,7 @@ const { findOwnedContract } = require('./auth');
 const { emitAnalysisProgress, updateAnalysisJob, getIoInstance, TOTAL_EST_SECONDS } = require('./analysisJob');
 const { extractTextFromFile, wrapContractContent } = require('./fileExtraction');
 const { getRelevantKnowledge, annotateKnowledgeUpdates } = require('./knowledge');
-const { callJsonLLM } = require('./llm');
+const { callJsonLLM, getReviewLlmRequestOptions } = require('./llm');
 const { normalizeAnalysisResult, aggregateClauseResults, buildStandardComparison } = require('./analysisCore');
 const { analyzeSealAndSignature } = require('./seal');
 
@@ -208,10 +208,11 @@ ${wrapContractContent(plainText)}
         const subjectSearchPrompt = knowledgeBaseOnly ? '' : `\n\n主体外部核验证据(优先为第三方企业数据 API 风险画像,部分为 Bing/Baidu 网页搜索回退):\n${companySearchContext || '未识别到可检索的公司主体名称。'}\n\n请额外输出 company_review 字段,结构为 [{"company_name":"公司名称","risk_level":"red/yellow/green","risk_items":[{"type":"类型","detail":"详情","date":"日期"}],"suggestion":"基于风险等级的建议措施","status":"核验状态","evidence_summary":"核验摘要","authenticity":"真实性结论","sources":["URL"]}。红色主体建议要求担保或拒绝签约,黄色主体建议加强资信调查,绿色主体无重大风险。`;
         const contractCharCount = plainText.length;
         const LONG_CONTRACT_THRESHOLD = 8000; // 短/长合同分界（字符数）
+        const reviewLlmRequestOptions = getReviewLlmRequestOptions();
         let analysisResult;
         if (contractCharCount < LONG_CONTRACT_THRESHOLD) {
             // 短合同：原整篇审查（保持现有逻辑）
-            analysisResult = normalizeAnalysisResult(await callJsonLLM(prompt + subjectSearchPrompt), plainText);
+            analysisResult = normalizeAnalysisResult(await callJsonLLM(prompt + subjectSearchPrompt, reviewLlmRequestOptions), plainText);
         } else {
             // 长合同：条款树分层审查，逐条独立召回法条 + LLM 审查
             const clauses = contractParser.parseContractTree(plainText);
@@ -308,7 +309,7 @@ ${clause.text}
                         current_clause_id: clause.clause_id,
                     });
                     try {
-                        const clauseResult = normalizeAnalysisResult(await callJsonLLM(clausePrompt), clause.text || '');
+                        const clauseResult = normalizeAnalysisResult(await callJsonLLM(clausePrompt, reviewLlmRequestOptions), clause.text || '');
                         clauseResult.clause_id = clause.clause_id;
                         return clauseResult;
                     } catch (clauseErr) {
@@ -401,9 +402,12 @@ ${clause.text}
         if (getIoInstance()) getIoInstance().to(`contract-${contractId}`).emit('analysis-complete', { results: analysisResult, perspective: userPerspective });
     } catch (error) {
         console.error('Error during background AI analysis:', error);
-        updateAnalysisJob(contractId, { status: 'failed', error: error.message });
-        await emitAnalysisProgress(null, contractId, { step: 'failed', status: 'failed', message: `分析失败：${error.message}` });
-        if (getIoInstance()) getIoInstance().to(`contract-${contractId}`).emit('analysis-failed', { error: error.message });
+        const publicError = /timed?\s*out|timeout/i.test(String(error?.message || ''))
+            ? 'AI 审查等待超过 5 分钟，已停止本次任务。合同文件和已完成步骤均已保留，请稍后重新审查。'
+            : `分析失败：${error.message}`;
+        updateAnalysisJob(contractId, { status: 'failed', error: publicError });
+        await emitAnalysisProgress(null, contractId, { step: 'failed', status: 'failed', message: publicError });
+        if (getIoInstance()) getIoInstance().to(`contract-${contractId}`).emit('analysis-failed', { error: publicError });
     }
 };
 

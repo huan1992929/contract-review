@@ -169,11 +169,13 @@ ${wrapContractContent(plainText)}
             const contract = await findOwnedContract(contractId, userId);
             if (!contract) return res.status(404).json({ error: 'Contract not found.' });
             const hasResult = Boolean(contract.analysis_result);
+            const interrupted = !hasResult && ['analyzing', 'running'].includes(String(contract.analysis_status || '').toLowerCase());
             return res.json({
                 contractId,
-                status: hasResult ? 'completed' : (contract.analysis_status || 'idle'),
+                status: hasResult ? 'completed' : (interrupted ? 'failed' : (contract.analysis_status || 'idle')),
                 percent: hasResult ? 100 : 0,
                 steps: ANALYSIS_STEPS.map((s) => ({ ...s, status: hasResult ? 'completed' : 'pending', message: '' })),
+                error: interrupted ? '上次审查因服务重启或超时中断，请重新发起审查。合同文件已保留。' : null,
                 result: hasResult ? parseJsonField(contract.analysis_result, null) : null,
             });
         }
