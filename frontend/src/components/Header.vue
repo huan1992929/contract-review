@@ -19,7 +19,7 @@ export default {
   display: flex;
   align-items: center;
   padding: 10px 20px;
-  background-color: #006f6c;
+  background-color: #141514;
   color: white;
 }
 
@@ -36,7 +36,7 @@ h1 {
 
 p {
   margin: 2px 0 0;
-  color: #e4c987;
+  color: #f39aaf;
   font-family: Georgia, serif;
   font-size: 9px;
   letter-spacing: .16em;

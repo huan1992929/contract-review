@@ -139,9 +139,44 @@ export default {
   min-height: 0;
   max-height: 100%;
   overflow-y: auto;
-  padding-left: 8px;
-  padding-right: 8px;
+  padding-left: 16px;
+  padding-right: 16px;
   padding-bottom: 28px !important;
+}
+
+.confirm-step > div > .text-center {
+  max-width: 760px;
+  margin-right: auto;
+  margin-left: auto;
+  padding: 22px 24px;
+  border: 1px solid var(--tp-line);
+  border-radius: 16px;
+  background: linear-gradient(135deg, #fff 0%, var(--tp-accent-subtle) 145%);
+  box-shadow: var(--tp-shadow-sm);
+}
+
+.confirm-step :deep(.bg-white) {
+  border: 1px solid var(--tp-line);
+  border-radius: 16px;
+  box-shadow: var(--tp-shadow-sm);
+}
+
+.confirm-step :deep(button) {
+  border-radius: var(--tp-radius-control);
+}
+
+.confirm-step :deep(.el-checkbox.is-bordered) {
+  border-radius: 10px;
+}
+
+.confirm-step :deep(.el-input__wrapper),
+.confirm-step :deep(.el-select__wrapper) {
+  box-shadow: 0 0 0 1px var(--tp-line) inset;
+}
+
+.confirm-step :deep(.el-input__wrapper.is-focus),
+.confirm-step :deep(.el-select__wrapper.is-focused) {
+  box-shadow: 0 0 0 1px var(--tp-accent) inset, 0 0 0 3px rgba(214, 0, 46, .11);
 }
 
 .review-options-panel {

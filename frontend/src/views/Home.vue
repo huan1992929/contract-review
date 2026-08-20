@@ -2,23 +2,23 @@
   <main class="home-page">
     <section class="hero-section">
       <div class="hero-architecture" aria-hidden="true">
-        <span class="tower tower-one"></span>
-        <span class="tower tower-two"></span>
-        <span class="tower tower-three"></span>
+        <span class="signal signal-one"></span>
+        <span class="signal signal-two"></span>
+        <span class="signal signal-three"></span>
         <span class="horizon"></span>
       </div>
       <div class="hero-content">
-        <p class="eyebrow">ZHONG AN CONTRACT INTELLIGENCE</p>
-        <h1>每一条款，有据可核。</h1>
-        <p class="hero-copy">面向成本与法务联合会审，从内部范本、审查要点、法规与案例中找到依据，让修改意见真正落到合同。</p>
+        <p class="eyebrow">THINK OPEN · LEGAL WORKSPACE</p>
+        <h1>合同审查，从上传到终稿。</h1>
+        <p class="hero-copy">基于思库法务助手所绑定的合同模板与法律知识，完成审核、修订、复审与终稿交付。</p>
         <div class="hero-actions">
           <button class="primary-button" @click="startNewReview">开始新审查 <span>→</span></button>
-          <span class="knowledge-note"><i></i>仅使用企业知识库</span>
+          <span class="knowledge-note"><i></i>法务助手知识库已绑定</span>
         </div>
       </div>
       <div class="hero-side-note">
-        <strong>00672.HK</strong>
-        <span>成本管控 · 法务合规</span>
+        <strong>WEKNORA</strong>
+        <span>ONLYOFFICE · DOCX</span>
       </div>
     </section>
 
@@ -174,10 +174,10 @@ export default {
     };
 
     const workflow = [
-      { step: '01', title: '上传合同', color: '#008c88', copy: '选择文件，进入合同预览。' },
-      { step: '02', title: '确认范围', color: '#d2ae62', copy: '确认品类、立场与审查重点。' },
-      { step: '03', title: '依据对标', color: '#008c88', copy: '核对范本、法规、案例与要点。' },
-      { step: '04', title: '形成意见', color: '#d2ae62', copy: '输出可用于会审的修改方案。' },
+      { step: '01', title: '上传合同', color: '#d6002e', copy: '选择文件，进入合同预览。' },
+      { step: '02', title: '确认范围', color: '#5e6160', copy: '确认品类、立场与审查重点。' },
+      { step: '03', title: '依据对标', color: '#d6002e', copy: '核对范本、法规、案例与要点。' },
+      { step: '04', title: '形成意见', color: '#5e6160', copy: '输出可用于会审的修改方案。' },
     ];
 
     return {
@@ -196,7 +196,7 @@ export default {
 
 <style scoped>
 .home-page {
-  height: calc(100vh - 72px);
+  height: calc(100vh - 64px);
   overflow: hidden;
   background: transparent;
   color: var(--za-ink);
@@ -207,14 +207,15 @@ export default {
   position: relative;
   width: calc(100% - 36px);
   max-width: 1280px;
-  height: 220px;
+  height: 224px;
   margin: 18px auto 0;
-  border-radius: 3px;
+  border: 1px solid #2f3130;
+  border-radius: 22px;
   overflow: hidden;
   display: flex;
   align-items: stretch;
-  background: linear-gradient(112deg, #006e6b 0%, #008c88 61%, #0f7774 100%);
-  box-shadow: 0 20px 54px rgba(0, 89, 86, .16);
+  background: linear-gradient(112deg, #141514 0%, #232524 64%, #311018 100%);
+  box-shadow: 0 18px 44px rgba(20, 21, 20, .16);
 }
 
 .hero-architecture {
@@ -229,22 +230,22 @@ export default {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(90deg, rgba(0, 87, 83, .96) 0%, rgba(0, 117, 113, .68) 50%, rgba(0, 87, 83, .06) 82%),
-    repeating-linear-gradient(90deg, transparent 0 46px, rgba(255,255,255,.07) 46px 47px),
-    repeating-linear-gradient(0deg, transparent 0 31px, rgba(255,255,255,.045) 31px 32px);
+    radial-gradient(circle at 78% 32%, rgba(214, 0, 46, .28), transparent 24%),
+    linear-gradient(90deg, rgba(20, 21, 20, .98) 0%, rgba(35, 37, 36, .86) 53%, rgba(214, 0, 46, .05) 86%),
+    repeating-linear-gradient(90deg, transparent 0 46px, rgba(255,255,255,.045) 46px 47px),
+    repeating-linear-gradient(0deg, transparent 0 31px, rgba(255,255,255,.03) 31px 32px);
 }
 
-.tower {
+.signal {
   position: absolute;
-  bottom: -14px;
-  border: 1px solid rgba(255, 255, 255, .22);
-  background: repeating-linear-gradient(0deg, rgba(255,255,255,.08) 0 10px, transparent 10px 19px);
-  transform: skewY(-8deg);
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 12px rgba(255, 255, 255, .025);
 }
 
-.tower-one { right: 4%; width: 120px; height: 210px; }
-.tower-two { right: 16%; width: 92px; height: 154px; }
-.tower-three { right: 25%; width: 62px; height: 112px; }
+.signal-one { right: -18px; top: -112px; width: 340px; height: 340px; }
+.signal-two { right: 115px; bottom: -154px; width: 260px; height: 260px; }
+.signal-three { right: 300px; top: 52px; width: 18px; height: 18px; border-color: #ec5b78; background: #d6002e; box-shadow: 0 0 0 8px rgba(214, 0, 46, .16); }
 
 .horizon {
   position: absolute;
@@ -252,7 +253,7 @@ export default {
   bottom: 30px;
   width: 47%;
   height: 1px;
-  background: rgba(210, 174, 98, .8);
+  background: rgba(236, 91, 120, .8);
   transform: rotate(-10deg);
 }
 
@@ -266,9 +267,9 @@ export default {
 
 .eyebrow {
   margin: 0 0 12px;
-  color: #e4c987;
+  color: #f39aaf;
   opacity: 1;
-  font-family: Georgia, serif;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: .19em;
@@ -280,11 +281,10 @@ h1, h2, h3, p {
 
 h1 {
   margin: 0;
-  font-family: "Songti SC", "STSong", serif;
-  font-size: clamp(30px, 3.5vw, 46px);
+  font-size: clamp(30px, 3.5vw, 44px);
   line-height: 1.08;
   font-weight: 700;
-  letter-spacing: .08em;
+  letter-spacing: -.045em;
 }
 
 .hero-copy {
@@ -313,7 +313,8 @@ h1 {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #e4c987;
+  background: #22a559;
+  box-shadow: 0 0 0 4px rgba(34, 165, 89, .16);
 }
 
 .hero-side-note {
@@ -330,14 +331,14 @@ h1 {
 }
 
 .hero-side-note strong {
-  color: #e4c987;
-  font-family: Georgia, serif;
+  color: #f39aaf;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
   font-size: 13px;
 }
 
 button {
   border: 0;
-  border-radius: 2px;
+  border-radius: 10px;
   font-weight: 800;
   cursor: pointer;
 }
@@ -357,8 +358,9 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 18px;
-  background: var(--za-gold);
-  color: #173533;
+  background: #d6002e;
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(118, 0, 26, .4), 0 6px 16px rgba(214, 0, 46, .24);
 }
 
 .primary-button span {
@@ -367,7 +369,7 @@ button:disabled {
 
 .secondary-button {
   background: #ffffff;
-  color: var(--za-teal-deep);
+  color: var(--tp-text-muted);
   box-shadow: inset 0 0 0 1px var(--za-line);
 }
 
@@ -389,9 +391,10 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   border: 1px solid var(--za-line);
-  border-top: 0;
+  border-radius: 16px;
   background: #fff;
-  box-shadow: 0 9px 28px rgba(23, 53, 51, .035);
+  box-shadow: var(--tp-shadow-sm);
+  overflow: hidden;
 }
 
 .evidence-strip article {
@@ -407,8 +410,8 @@ button:disabled {
 }
 
 .evidence-strip span {
-  color: var(--za-gold);
-  font-family: Georgia, serif;
+  color: var(--tp-accent);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
   font-size: 17px;
 }
 
@@ -420,7 +423,7 @@ button:disabled {
 
 .evidence-strip strong {
   color: var(--za-ink);
-  font-family: "Songti SC", "STSong", serif;
+  font-family: inherit;
   font-size: 13px;
   letter-spacing: .04em;
 }
@@ -436,10 +439,11 @@ button:disabled {
 .workflow-panel,
 .history-panel {
   min-height: 0;
-  border-radius: 3px;
+  border: 1px solid var(--za-line);
+  border-radius: 16px;
   padding: 18px;
   background: #ffffff;
-  box-shadow: inset 0 0 0 1px var(--za-line), 0 10px 30px rgba(23, 53, 51, .04);
+  box-shadow: var(--tp-shadow-sm);
 }
 
 .section-head {
@@ -448,7 +452,7 @@ button:disabled {
 
 .section-head h2 {
   margin: 0;
-  font-family: "Songti SC", "STSong", serif;
+  font-family: inherit;
   font-size: 20px;
   letter-spacing: .04em;
   line-height: 1.24;
@@ -472,16 +476,16 @@ button:disabled {
   gap: 9px;
   align-items: start;
   position: relative;
-  border-radius: 2px;
+  border-radius: 12px;
   padding: 10px;
-  background: #f8faf7;
+  background: var(--tp-bg-muted);
   box-shadow: inset 0 0 0 1px var(--za-line);
 }
 
 .workflow-item span {
   color: var(--accent);
   font-size: 12px;
-  font-family: Georgia, serif;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
   font-weight: 700;
 }
 
@@ -501,8 +505,8 @@ button:disabled {
 .empty-block {
   padding: 26px;
   text-align: center;
-  background: #f8faf7;
-  border-radius: 2px;
+  background: var(--tp-bg-muted);
+  border-radius: 12px;
 }
 
 .empty-block h3 {
@@ -516,7 +520,7 @@ button:disabled {
   margin-top: 12px;
   padding: 0 14px;
   color: #fff;
-  background: var(--za-teal);
+  background: var(--tp-accent);
 }
 
 .empty-block.danger {
@@ -534,7 +538,7 @@ button:disabled {
 .history-filter-select {
   padding: 6px 10px;
   border: 1px solid var(--za-line);
-  border-radius: 2px;
+  border-radius: 10px;
   font-size: 13px;
   outline: none;
   background: #fff;

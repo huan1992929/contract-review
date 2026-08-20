@@ -1,6 +1,6 @@
 <template>
   <div :class="['step-shell bg-white', compact ? 'step-shell--compact' : 'flex-shrink-0']">
-    <div class="step-caption">{{ compact ? '任务进度' : 'REVIEW WORKFLOW' }}</div>
+    <div class="step-caption">{{ compact ? '任务进度' : 'CONTRACT REVIEW FLOW' }}</div>
     <div class="step-track flex items-center" aria-label="合同审核任务进度">
       <div class="flex items-center text-xs" :class="activeStep >= 0 ? 'text-primary' : 'text-gray-500'">
         <div class="step-dot flex items-center justify-center rounded-full border-2" :class="activeStep >= 0 ? 'border-primary' : 'border-gray-400'">
@@ -42,17 +42,18 @@ export default {
 <style scoped>
 .step-shell {
   position: relative;
-  padding: 12px 18px;
-  margin-bottom: 8px;
+  padding: 13px 18px;
+  margin: 12px clamp(12px, 2vw, 24px) 8px;
   border: 1px solid var(--za-line);
-  border-radius: 3px;
-  box-shadow: 0 8px 22px rgba(23, 53, 51, .04);
+  border-radius: 14px;
+  box-shadow: var(--tp-shadow-sm);
 }
 
 .step-dot {
   width: 20px;
   height: 20px;
   flex: 0 0 20px;
+  background: var(--tp-bg-surface);
 }
 
 .step-line {
@@ -62,8 +63,8 @@ export default {
 
 .step-caption {
   margin-bottom: 8px;
-  color: var(--za-gold-ink);
-  font-family: Georgia, serif;
+  color: var(--tp-accent);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
   font-size: 8px;
   font-weight: 700;
   letter-spacing: .18em;
@@ -82,7 +83,7 @@ export default {
 
 .step-shell--compact .step-caption {
   margin-bottom: 5px;
-  color: var(--za-gold-ink);
+  color: var(--tp-text-subtle);
   font-family: inherit;
   font-size: 10px;
   font-weight: 700;

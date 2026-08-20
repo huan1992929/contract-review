@@ -1,6 +1,6 @@
 <template>
   <div v-if="loading && activeStep < 2" class="fixed inset-0 bg-white/70 backdrop-blur-sm flex items-center justify-center z-50">
-    <div class="flex flex-col items-center max-w-lg bg-white border border-border-color rounded-md p-6 shadow-sm w-full mx-4">
+    <div class="analysis-loading-card flex flex-col items-center max-w-lg bg-white border border-border-color rounded-md p-6 shadow-sm w-full mx-4">
       <div class="flex items-center justify-between w-full mb-3">
         <p class="text-lg font-semibold text-text-dark">{{ loadingMessage }}</p>
         <span v-if="analysisPercent > 0" class="text-2xl font-bold text-primary">{{ analysisPercent }}%</span>
@@ -98,3 +98,10 @@ export default {
   },
 };
 </script>
+
+<style scoped>
+.analysis-loading-card {
+  border-radius: 16px;
+  box-shadow: var(--tp-shadow-card);
+}
+</style>

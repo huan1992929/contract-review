@@ -340,7 +340,7 @@ export default {
 }
 
 .suggestion-index:focus-visible {
-  outline: 2px solid #008f87;
+  outline: 2px solid var(--tp-accent);
   outline-offset: 2px;
 }
 
@@ -383,7 +383,7 @@ export default {
 }
 
 .suggestion-card__toggle:focus-visible {
-  outline: 2px solid #008f87;
+  outline: 2px solid var(--tp-accent);
   outline-offset: 3px;
 }
 
@@ -435,7 +435,7 @@ export default {
 }
 
 .suggestion-card__chevron.is-open {
-  color: #008f87;
+  color: var(--tp-accent);
   transform: rotate(180deg);
 }
 

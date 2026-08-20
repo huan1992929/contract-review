@@ -55,25 +55,49 @@ onBeforeUnmount(() => window.removeEventListener('za-auth-expired', handleExpire
 
 <style>
 :root {
-  --za-teal: #008c88;
-  --za-teal-deep: #006f6c;
-  --za-gold: #d2ae62;
-  --za-gold-ink: #876528;
-  --za-gold-soft: #f4ead2;
-  --za-ink: #173533;
-  --za-muted: #6c7c7a;
-  --za-canvas: #f4f6f2;
-  --za-line: #dde4df;
-  --el-color-primary: #008c88;
-  --el-color-primary-light-3: #3ca9a5;
-  --el-color-primary-light-5: #78c4c1;
-  --el-color-primary-light-7: #b5dfdc;
-  --el-color-primary-light-8: #d0eae8;
-  --el-color-primary-light-9: #edf7f5;
-  --el-color-primary-dark-2: #006f6c;
+  --tp-accent: #d6002e;
+  --tp-accent-hover: #be0029;
+  --tp-accent-active: #9c0022;
+  --tp-accent-subtle: #fce7ec;
+  --tp-accent-muted: #ec5b78;
+  --tp-bg-app: #fafbfb;
+  --tp-bg-surface: #ffffff;
+  --tp-bg-muted: #f5f6f6;
+  --tp-text-primary: #232524;
+  --tp-text-body: #3c3e3d;
+  --tp-text-muted: #5e6160;
+  --tp-text-subtle: #828584;
+  --tp-line: #e3e5e4;
+  --tp-line-strong: #c6c9c8;
+  --tp-success: #1e8e4e;
+  --tp-success-bg: #e7f3ec;
+  --tp-warning: #b7791f;
+  --tp-warning-bg: #fbf1df;
+  --tp-shadow-sm: 0 1px 2px rgba(20, 21, 20, .06);
+  --tp-shadow-card: 0 2px 6px rgba(20, 21, 20, .05), 0 14px 34px rgba(20, 21, 20, .07);
+  --tp-radius-control: 10px;
+  --tp-radius-card: 16px;
+
+  /* 兼容现有组件变量，全部映射到 THINK Open 语义色。 */
+  --za-teal: var(--tp-accent);
+  --za-teal-deep: var(--tp-accent-active);
+  --za-gold: var(--tp-accent-muted);
+  --za-gold-ink: var(--tp-accent-active);
+  --za-gold-soft: var(--tp-accent-subtle);
+  --za-ink: var(--tp-text-primary);
+  --za-muted: var(--tp-text-muted);
+  --za-canvas: var(--tp-bg-app);
+  --za-line: var(--tp-line);
+  --el-color-primary: #d6002e;
+  --el-color-primary-light-3: #e42953;
+  --el-color-primary-light-5: #ec5b78;
+  --el-color-primary-light-7: #f39aaf;
+  --el-color-primary-light-8: #f8c2ce;
+  --el-color-primary-light-9: #fce7ec;
+  --el-color-primary-dark-2: #9c0022;
   color: var(--za-ink);
   background: var(--za-canvas);
-  font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: "PingFang SC", "Noto Sans SC", "Source Han Sans SC", system-ui, sans-serif;
   letter-spacing: 0;
 }
 
@@ -89,10 +113,7 @@ body,
 }
 
 body {
-  background:
-    linear-gradient(rgba(255, 255, 255, .88), rgba(255, 255, 255, .88)),
-    repeating-linear-gradient(90deg, transparent 0 79px, rgba(0, 140, 136, .035) 79px 80px),
-    var(--za-canvas);
+  background: var(--tp-bg-app);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -114,15 +135,16 @@ select:focus-visible,
   position: sticky;
   top: 0;
   z-index: 40;
-  height: 72px;
+  height: 64px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  padding: 0 clamp(18px, 3vw, 46px);
-  background: rgba(255, 255, 255, 0.96);
+  padding: 0 clamp(18px, 2.7vw, 42px);
+  border-bottom: 1px solid var(--tp-line);
+  background: rgba(255, 255, 255, 0.94);
   backdrop-filter: blur(20px);
-  box-shadow: inset 0 -1px 0 rgba(210, 174, 98, .55), 0 8px 24px rgba(23, 53, 51, .04);
+  box-shadow: 0 1px 2px rgba(20, 21, 20, .04);
 }
 
 .brand {
@@ -140,21 +162,21 @@ select:focus-visible,
 }
 
 .brand-wordmark {
-  color: #232142;
-  font-size: 18px;
-  font-weight: 800;
-  letter-spacing: .04em;
+  color: var(--tp-text-primary);
+  font-size: 17px;
+  font-weight: 900;
+  letter-spacing: -.025em;
 }
 
 .brand-wordmark em {
-  color: #7a1f3d;
+  color: var(--tp-accent);
   font-style: normal;
 }
 
 .brand-divider {
   width: 1px;
   height: 30px;
-  background: #e1d3b2;
+  background: var(--tp-line);
 }
 
 .brand-copy {
@@ -163,24 +185,22 @@ select:focus-visible,
 }
 
 .brand-copy strong {
-  font-family: "Songti SC", "STSong", serif;
-  font-size: 17px;
-  font-weight: 700;
-  letter-spacing: .08em;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -.015em;
 }
 
 .brand-copy small {
-  color: var(--za-gold);
-  font-family: Georgia, serif;
-  font-size: 7px;
+  color: var(--tp-text-subtle);
+  font-size: 8px;
   font-weight: 700;
-  letter-spacing: .15em;
+  letter-spacing: .12em;
 }
 
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 22px;
+  gap: 14px;
 }
 
 .app-nav {
@@ -194,32 +214,29 @@ select:focus-visible,
   display: inline-flex;
   align-items: center;
   position: relative;
-  min-height: 72px;
-  padding: 0 16px;
-  color: #526765;
+  min-height: 36px;
+  padding: 0 13px;
+  border-radius: var(--tp-radius-control);
+  color: var(--tp-text-muted);
   text-decoration: none;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
   white-space: nowrap;
   transition: color 0.18s ease;
 }
 
 .nav-link:hover {
-  color: var(--za-teal);
+  color: var(--tp-text-primary);
+  background: var(--tp-bg-muted);
 }
 
 .nav-link-active {
-  color: var(--za-teal);
+  color: var(--tp-accent);
+  background: var(--tp-accent-subtle);
 }
 
 .nav-link-active::after {
-  content: '';
-  position: absolute;
-  right: 16px;
-  bottom: 0;
-  left: 16px;
-  height: 3px;
-  background: var(--za-gold);
+  display: none;
 }
 
 .poc-badge {
@@ -227,10 +244,10 @@ select:focus-visible,
   align-items: center;
   gap: 7px;
   padding: 7px 10px;
-  border: 1px solid #dce8e4;
-  border-radius: 2px;
-  color: #52706d;
-  background: #f7faf8;
+  border: 1px solid var(--tp-line);
+  border-radius: 999px;
+  color: var(--tp-text-muted);
+  background: var(--tp-bg-muted);
   font-size: 11px;
   white-space: nowrap;
 }
@@ -239,17 +256,18 @@ select:focus-visible,
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--za-teal);
-  box-shadow: 0 0 0 3px rgba(0, 140, 136, .12);
+  background: var(--tp-success);
+  box-shadow: 0 0 0 3px var(--tp-success-bg);
 }
 
 .account-control {
+  flex: 0 0 auto;
   height: 42px;
   display: flex;
   align-items: center;
   gap: 9px;
   padding: 4px 5px 4px 4px;
-  border-left: 1px solid #e3e7e3;
+  border-left: 1px solid var(--tp-line);
   padding-left: 16px;
 }
 
@@ -260,8 +278,7 @@ select:focus-visible,
   place-items: center;
   border-radius: 50%;
   color: white;
-  background: var(--za-teal);
-  font-family: Georgia, serif;
+  background: linear-gradient(140deg, #3c3e3d, #141514);
   font-size: 13px;
 }
 
@@ -272,33 +289,36 @@ select:focus-visible,
 }
 
 .account-copy strong {
-  color: var(--za-ink);
+  color: var(--tp-text-primary);
   font-size: 11px;
   font-weight: 700;
 }
 
 .account-copy small {
   margin-top: 3px;
-  color: #85928f;
+  color: var(--tp-text-subtle);
   font-size: 9px;
 }
 
 .logout-button {
-  border: 0;
-  padding: 6px;
-  color: #758582;
-  background: transparent;
+  white-space: nowrap;
+  min-height: 32px;
+  border: 1px solid var(--tp-line);
+  border-radius: var(--tp-radius-control);
+  padding: 0 10px;
+  color: var(--tp-text-muted);
+  background: var(--tp-bg-surface);
   cursor: pointer;
   font-size: 10px;
 }
 
-.logout-button:hover { color: var(--za-teal); }
+.logout-button:hover { border-color: var(--tp-accent-muted); color: var(--tp-accent); background: var(--tp-accent-subtle); }
 
 .el-button,
 .el-input__wrapper,
 .el-textarea__inner,
 .el-select__wrapper {
-  border-radius: 3px !important;
+  border-radius: var(--tp-radius-control) !important;
 }
 
 .el-input__wrapper,
@@ -321,11 +341,14 @@ select:focus-visible,
   }
 
   .app-nav {
-    width: 100%;
+    width: auto;
+    flex: 1 1 auto;
+    min-width: 0;
   }
 
   .header-actions {
     width: 100%;
+    align-items: center;
   }
 
   .nav-link {
@@ -343,6 +366,10 @@ select:focus-visible,
   }
 
   .account-copy { display: none; }
-  .account-control { margin-left: auto; }
+  .account-control {
+    margin-left: auto;
+    padding-left: 8px;
+    border-left: 0;
+  }
 }
 </style>

@@ -1,8 +1,13 @@
 <template>
   <div class="upload-stage flex-grow overflow-y-auto flex flex-col items-center py-8 px-4 text-center">
-    <p class="upload-kicker">ZHONG AN GROUP · INTERNAL REVIEW</p>
-    <h1 class="text-3xl font-bold tracking-tight text-text-dark sm:text-4xl">思库合同审核</h1>
+    <p class="upload-kicker">THINK OPEN · CONTRACT REVIEW</p>
+    <h1 class="text-3xl font-bold tracking-tight text-text-dark sm:text-4xl">合同审核工作台</h1>
     <p class="mt-3 text-sm leading-7 text-text-light">上传待审合同，系统将依托内部范本、法规、案例与审查要点形成修改意见。</p>
+    <div class="upload-trust-row" aria-label="审核能力">
+      <span><i></i>思库账号权限</span>
+      <span><i></i>WeKnora 合同模板</span>
+      <span><i></i>OnlyOffice 审阅修订</span>
+    </div>
 
     <div class="mt-10 w-full max-w-2xl">
       <el-upload
@@ -130,44 +135,73 @@ export default {
 <style scoped>
 .upload-stage {
   background:
-    radial-gradient(circle at 50% 18%, rgba(210, 174, 98, .12), transparent 25%),
-    linear-gradient(180deg, #fff 0%, #f6f7f3 100%);
+    radial-gradient(circle at 50% 8%, rgba(214, 0, 46, .075), transparent 28%),
+    linear-gradient(180deg, #fff 0%, #fafbfb 100%);
 }
 
 .upload-kicker {
   margin: 0 0 10px;
-  color: var(--za-gold-ink);
-  font-family: Georgia, serif;
+  color: var(--tp-accent);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: .18em;
 }
 
+.upload-trust-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.upload-trust-row span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--tp-line);
+  border-radius: 999px;
+  color: var(--tp-text-muted);
+  background: rgba(255, 255, 255, .82);
+  font-size: 11px;
+}
+
+.upload-trust-row i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tp-success);
+  box-shadow: 0 0 0 3px var(--tp-success-bg);
+}
+
 .upload-dragger :deep(.el-upload-dragger) {
   @apply bg-bg-subtle border-2 border-dashed border-border-color transition-colors duration-200 ease-in-out;
-  border-radius: 3px;
+  border-radius: 16px;
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: center;
-  height: 132px;
+  height: 164px;
   width: 100%;
 }
 
 .upload-dragger :deep(.el-upload-dragger:hover) {
   @apply border-primary;
-  background: #edf7f5;
+  background: var(--tp-accent-subtle);
 }
 </style>
 
 <style>
 .linked-analysis-panel {
-  border: 1px solid #dde4df;
-  border-radius: 3px;
-  background: linear-gradient(180deg, #ffffff 0%, #f6f7f3 100%);
+  border: 1px solid var(--tp-line);
+  border-radius: 16px;
+  background: linear-gradient(180deg, #ffffff 0%, #fafbfb 100%);
   padding: 20px;
   margin-bottom: 32px;
-  box-shadow: 0 12px 28px rgba(23, 53, 51, .06);
+  box-shadow: var(--tp-shadow-sm);
 }
 .linked-analysis-panel__picker {
   display: flex;
@@ -184,18 +218,18 @@ export default {
 }
 .linked-analysis-panel__file-button {
   flex: 0 0 auto;
-  border: 1px solid #008c88;
-  border-radius: 3px;
-  background: #edf7f5;
-  color: #006f6c;
+  border: 1px solid var(--tp-accent-muted);
+  border-radius: 10px;
+  background: var(--tp-accent-subtle);
+  color: var(--tp-accent-active);
   padding: 10px 14px;
   font-size: 12px;
   font-weight: 700;
   transition: background 0.2s ease, border-color 0.2s ease;
 }
 .linked-analysis-panel__file-button:hover {
-  background: #d7eeeb;
-  border-color: #006f6c;
+  background: #f8c2ce;
+  border-color: var(--tp-accent);
 }
 .linked-analysis-panel__count {
   flex: 1;
@@ -205,8 +239,8 @@ export default {
 }
 .linked-analysis-panel__button {
   flex: 0 0 auto;
-  border-radius: 3px;
-  background: #008c88;
+  border-radius: 10px;
+  background: var(--tp-accent);
   color: #fff;
   padding: 10px 16px;
   font-size: 12px;
@@ -214,7 +248,7 @@ export default {
   transition: background 0.2s ease, opacity 0.2s ease;
 }
 .linked-analysis-panel__button:hover:not(:disabled) {
-  background: #006f6c;
+  background: var(--tp-accent-hover);
 }
 .linked-analysis-panel__button:disabled {
   cursor: not-allowed;

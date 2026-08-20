@@ -1,7 +1,7 @@
 <template>
-  <div class="flex-grow min-h-0 flex gap-4">
+  <div class="review-workspace flex-grow min-h-0 flex gap-4">
     <!-- Left Side: OnlyOffice Editor -->
-    <div class="basis-0 flex-[3] min-w-0 bg-white rounded-lg shadow-md overflow-hidden h-full flex flex-col">
+    <div class="document-panel basis-0 flex-[3] min-w-0 bg-white rounded-lg shadow-md overflow-hidden h-full flex flex-col">
       <div class="document-workbar px-3 py-2 border-b border-border-color bg-bg-subtle flex items-center justify-between gap-4">
         <div class="min-w-0 flex items-center gap-5">
           <StepHeader :activeStep="2" compact />
@@ -84,7 +84,7 @@
     </div>
 
     <!-- Right Side: AI Review Panel -->
-    <div class="basis-0 flex-[2] min-w-0 bg-white rounded-lg shadow-md flex flex-col h-full">
+    <div class="review-panel basis-0 flex-[2] min-w-0 bg-white rounded-lg shadow-md flex flex-col h-full">
       <!-- Panel Header -->
       <div class="p-3 border-b border-border-color flex flex-col gap-3 flex-shrink-0">
         <div class="flex items-center">
@@ -188,6 +188,22 @@ export default {
 </script>
 
 <style scoped>
+.review-workspace {
+  padding: 0 clamp(12px, 1.5vw, 22px) 18px;
+}
+
+.document-panel,
+.review-panel {
+  border: 1px solid var(--tp-line);
+  border-radius: 16px;
+  box-shadow: var(--tp-shadow-sm);
+}
+
+.document-workbar {
+  min-height: 58px;
+  background: var(--tp-bg-muted);
+}
+
 .document-context {
   flex: 0 0 148px;
 }
@@ -195,22 +211,22 @@ export default {
 .apply-mode-switch {
   display: inline-flex;
   padding: 2px;
-  border: 1px solid #cfded9;
-  border-radius: 6px;
+  border: 1px solid var(--tp-line);
+  border-radius: 10px;
   background: #fff;
 }
 
 .apply-mode-switch button {
   padding: 4px 9px;
-  border-radius: 4px;
-  color: #687b77;
+  border-radius: 8px;
+  color: var(--tp-text-muted);
   font-size: 12px;
   line-height: 1.25;
 }
 
 .apply-mode-switch button.is-active {
   color: #fff;
-  background: #008f87;
+  background: var(--tp-accent);
 }
 
 .apply-mode-switch button:disabled {
@@ -219,8 +235,8 @@ export default {
 }
 
 .apply-mode-switch.is-syncing {
-  border-color: #82bbb4;
-  box-shadow: 0 0 0 2px rgba(0, 143, 135, .08);
+  border-color: var(--tp-accent-muted);
+  box-shadow: 0 0 0 3px rgba(214, 0, 46, .09);
 }
 
 .contract-export-button {
@@ -229,10 +245,10 @@ export default {
   gap: 5px;
   min-height: 30px;
   padding: 5px 10px;
-  border: 1px solid #c9a75d;
-  border-radius: 6px;
-  background: #fffdf7;
-  color: #76561d;
+  border: 1px solid var(--tp-line-strong);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--tp-text-body);
   font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
@@ -240,9 +256,9 @@ export default {
 }
 
 .contract-export-button:hover:not(:disabled) {
-  border-color: #ad8030;
-  background: #fff8e8;
-  color: #5f4314;
+  border-color: var(--tp-accent-muted);
+  background: var(--tp-accent-subtle);
+  color: var(--tp-accent-active);
 }
 
 .contract-export-button:disabled {
@@ -262,7 +278,7 @@ export default {
 
 .contract-export-caret {
   margin-left: 1px;
-  color: #9b7a3c;
+  color: var(--tp-text-subtle);
 }
 
 .editor-reload-state {
@@ -271,16 +287,16 @@ export default {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  background: #f7faf8;
-  color: #687b77;
+  background: var(--tp-bg-muted);
+  color: var(--tp-text-muted);
   font-size: 13px;
 }
 
 .editor-reload-spinner {
   width: 26px;
   height: 26px;
-  border: 3px solid #cfe1dc;
-  border-top-color: #008f87;
+  border: 3px solid #f8c2ce;
+  border-top-color: var(--tp-accent);
   border-radius: 50%;
   animation: editor-reload-spin 0.8s linear infinite;
 }
@@ -299,6 +315,21 @@ export default {
   .document-workbar {
     align-items: flex-start;
     flex-direction: column;
+  }
+}
+
+@media (max-width: 900px) {
+  .review-workspace {
+    height: auto;
+    min-height: 0;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .document-panel,
+  .review-panel {
+    flex-basis: auto;
+    min-height: 680px;
   }
 }
 </style>

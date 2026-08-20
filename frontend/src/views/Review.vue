@@ -180,9 +180,9 @@ export default {
 
 .analysis-progress {
   position: relative;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #f8fafc;
+  border: 1px solid var(--tp-line);
+  border-radius: 12px;
+  background: var(--tp-bg-muted);
   padding: 12px;
 }
 
@@ -227,8 +227,8 @@ export default {
 }
 
 .analysis-progress__item--running .analysis-progress__marker {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+  border-color: var(--tp-accent);
+  box-shadow: 0 0 0 4px rgba(214, 0, 46, .12);
 }
 
 .analysis-progress__item--pending .analysis-progress__marker {
@@ -245,8 +245,8 @@ export default {
   display: inline-block;
   width: 10px;
   height: 10px;
-  border: 2px solid rgba(37, 99, 235, 0.3);
-  border-top-color: #2563eb;
+  border: 2px solid rgba(214, 0, 46, .25);
+  border-top-color: var(--tp-accent);
   border-radius: 50%;
   animation: analysis-spin 0.8s linear infinite;
 }
@@ -284,7 +284,7 @@ export default {
   flex: 0 0 auto;
   font-size: 11px;
   font-weight: 600;
-  color: #2563eb;
+  color: var(--tp-accent);
 }
 
 .analysis-progress__item--completed .analysis-progress__status {

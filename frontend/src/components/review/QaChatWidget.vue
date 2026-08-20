@@ -114,17 +114,17 @@ export default {
   width: 56px;
   height: 56px;
   border-radius: 50%;
-  background: #2563eb;
+  background: var(--tp-accent);
   color: #fff;
   cursor: pointer;
-  box-shadow: 0 8px 24px rgba(37, 99, 235, 0.35);
+  box-shadow: 0 8px 24px rgba(214, 0, 46, .3);
   transition: transform 0.2s, box-shadow 0.2s;
   justify-content: center;
 }
 
 .qa-chat-widget__fab:hover {
   transform: translateY(-2px);
-  box-shadow: 0 12px 28px rgba(37, 99, 235, 0.45);
+  box-shadow: 0 12px 28px rgba(214, 0, 46, .4);
 }
 
 .qa-chat-widget__fab-badge {
@@ -137,8 +137,8 @@ export default {
   max-width: calc(100vw - 40px);
   max-height: calc(100vh - 120px);
   background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 16px 48px rgba(15, 23, 42, 0.2);
+  border-radius: 16px;
+  box-shadow: 0 16px 48px rgba(20, 21, 20, .2);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -198,7 +198,7 @@ export default {
 }
 
 .qa-chat-widget__msg--user .qa-chat-widget__bubble {
-  background: #2563eb;
+  background: var(--tp-accent);
   color: #fff;
   box-shadow: none;
 }
@@ -268,7 +268,7 @@ export default {
   flex: 0 0 auto;
   border: 0;
   border-radius: 8px;
-  background: #2563eb;
+  background: var(--tp-accent);
   color: #fff;
   font-weight: 700;
   font-size: 13px;

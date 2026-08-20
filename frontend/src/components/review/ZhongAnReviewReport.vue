@@ -2,9 +2,9 @@
   <section class="zhongan-report">
     <header class="report-masthead">
       <div>
-        <p class="report-kicker">ZHONG AN GROUP · CONTRACT REVIEW</p>
+        <p class="report-kicker">THINK OPEN · CONTRACT REVIEW</p>
         <h2>思库合同审核报告</h2>
-        <p class="report-subtitle">成本管控与法务合规联合审查</p>
+        <p class="report-subtitle">基于思库法务助手知识库的结构化审查</p>
       </div>
       <div class="policy-seal">仅限知识库依据</div>
     </header>
@@ -185,11 +185,11 @@ export default {
 
 <style scoped>
 .zhongan-report {
-  --ink: #173533;
-  --muted: #6c7c7a;
-  --line: #dde4df;
+  --ink: #232524;
+  --muted: #5e6160;
+  --line: #e3e5e4;
   --paper: #f7f7f2;
-  --accent: #d2ae62;
+  --accent: #d6002e;
   color: var(--ink);
   font-family: "PingFang SC", "Noto Sans CJK SC", sans-serif;
 }
@@ -204,14 +204,14 @@ export default {
   color: #fff;
   background:
     linear-gradient(120deg, rgba(255,255,255,.04) 0 45%, transparent 45% 100%),
-    linear-gradient(128deg, #006f6c 0%, #008c88 72%, #0a6f6c 100%);
-  border-radius: 3px;
-  box-shadow: 0 14px 30px rgba(0, 111, 108, .16);
+    linear-gradient(128deg, #141514 0%, #232524 70%, #4b101d 100%);
+  border-radius: 16px;
+  box-shadow: 0 14px 30px rgba(20, 21, 20, .14);
 }
 
-.report-kicker { margin: 0 0 7px; font-family: Georgia, serif; font-size: 10px; letter-spacing: .18em; color: #e4c987; }
-.report-masthead h2 { margin: 0; font-family: "Songti SC", "STSong", serif; font-size: 25px; letter-spacing: .08em; }
-.report-subtitle { margin: 8px 0 0; font-size: 12px; color: #d7ece9; }
+.report-kicker { margin: 0 0 7px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 10px; letter-spacing: .18em; color: #f39aaf; }
+.report-masthead h2 { margin: 0; font-size: 25px; font-weight: 800; letter-spacing: -.035em; }
+.report-subtitle { margin: 8px 0 0; font-size: 12px; color: rgba(255, 255, 255, .72); }
 .policy-seal { padding: 7px 10px; border: 1px solid rgba(255,255,255,.38); border-radius: 4px; font-size: 11px; letter-spacing: .08em; white-space: nowrap; }
 
 .report-module {
@@ -243,7 +243,7 @@ export default {
 .finding-card { padding: 12px; border-left: 3px solid var(--accent); }
 .finding-heading { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
 .finding-heading h4, .correction-title h4 { margin: 0; font-size: 13px; }
-.issue-type { flex: 0 0 auto; padding: 3px 7px; border: 1px solid #e4c987; color: #816529; background: #fbf6e9; border-radius: 2px; font-size: 10px; }
+.issue-type { flex: 0 0 auto; padding: 3px 7px; border: 1px solid #f8c2ce; color: #9c0022; background: #fce7ec; border-radius: 999px; font-size: 10px; }
 .finding-clause { margin-bottom: 8px !important; padding: 9px; background: var(--paper); border-left: 2px solid #adb6c2; }
 .finding-basis { margin-top: 8px !important; color: #3d4a5b; }
 .correction-title { justify-content: flex-start; align-items: center; }
@@ -251,7 +251,7 @@ export default {
 .correction-block { padding: 12px; }
 .correction-block + .correction-block { border-top: 1px solid var(--line); }
 .basis-block { background: var(--paper); }
-.suggestion-block { border-left: 3px solid #008c88; background: #edf7f5; }
+.suggestion-block { border-left: 3px solid #d6002e; background: #fce7ec; }
 .empty-state { margin: 0; padding: 18px; color: var(--muted); background: var(--paper); border: 1px dashed #c9d3ce; border-radius: 3px; font-size: 12px; text-align: center; }
 
 @media (max-width: 900px) {
