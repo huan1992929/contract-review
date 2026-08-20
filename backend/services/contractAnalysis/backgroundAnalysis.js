@@ -28,7 +28,7 @@ const { findOwnedContract } = require('./auth');
 const { emitAnalysisProgress, updateAnalysisJob, getIoInstance, TOTAL_EST_SECONDS } = require('./analysisJob');
 const { extractTextFromFile, wrapContractContent } = require('./fileExtraction');
 const { getRelevantKnowledge, annotateKnowledgeUpdates } = require('./knowledge');
-const { callJsonLLM, getReviewLlmRequestOptions } = require('./llm');
+const { callJsonLLM, getReviewLlmRequestOptions, shouldUseSegmentedReview } = require('./llm');
 const { normalizeAnalysisResult, aggregateClauseResults, buildStandardComparison } = require('./analysisCore');
 const { analyzeSealAndSignature } = require('./seal');
 
@@ -153,7 +153,7 @@ ${riskItemsText}
         await emitAnalysisProgress(null, contractId, { step: 'rule_check', status: 'completed', message: `硬性合规检查完成，检出 ${hardViolations.length} 项违规。`, partialResult: { hard_violations: hardViolations } });
 
         // Step 4: AI 生成审查结论
-        await emitAnalysisProgress(null, contractId, { step: 'llm_review', status: 'running', message: 'AI 正在深度审查合同，这是最耗时的步骤，请耐心等待...' });
+        await emitAnalysisProgress(null, contractId, { step: 'llm_review', status: 'running', message: 'AI 正在深度审查合同，通常需要 2–5 分钟，请耐心等待...' });
         const prompt = `你是一名资深法务专家，请按审查模板对合同进行深度审查，并只输出 JSON。
 
 审查模板：
@@ -207,14 +207,13 @@ ${wrapContractContent(plainText)}
 
         const subjectSearchPrompt = knowledgeBaseOnly ? '' : `\n\n主体外部核验证据(优先为第三方企业数据 API 风险画像,部分为 Bing/Baidu 网页搜索回退):\n${companySearchContext || '未识别到可检索的公司主体名称。'}\n\n请额外输出 company_review 字段,结构为 [{"company_name":"公司名称","risk_level":"red/yellow/green","risk_items":[{"type":"类型","detail":"详情","date":"日期"}],"suggestion":"基于风险等级的建议措施","status":"核验状态","evidence_summary":"核验摘要","authenticity":"真实性结论","sources":["URL"]}。红色主体建议要求担保或拒绝签约,黄色主体建议加强资信调查,绿色主体无重大风险。`;
         const contractCharCount = plainText.length;
-        const LONG_CONTRACT_THRESHOLD = 8000; // 短/长合同分界（字符数）
         const reviewLlmRequestOptions = getReviewLlmRequestOptions();
         let analysisResult;
-        if (contractCharCount < LONG_CONTRACT_THRESHOLD) {
+        if (!shouldUseSegmentedReview(contractCharCount)) {
             // 短合同：原整篇审查（保持现有逻辑）
             analysisResult = normalizeAnalysisResult(await callJsonLLM(prompt + subjectSearchPrompt, reviewLlmRequestOptions), plainText);
         } else {
-            // 长合同：条款树分层审查，逐条独立召回法条 + LLM 审查
+            // 较长合同：条款树分层审查，避免一次生成超大 JSON 被网关超时截断。
             const clauses = contractParser.parseContractTree(plainText);
             // 动态 ETA：基础 60s + 每条 10s（Task 2.5）
             updateAnalysisJob(contractId, { totalEstSeconds: TOTAL_EST_SECONDS + clauses.length * 10 });
@@ -322,6 +321,9 @@ ${clause.text}
             // 聚合各条款结果（去重 + 跨条款一致性标注）
             analysisResult = aggregateClauseResults(clauseResults);
             analysisResult.truncated_clauses = truncatedClauses;
+            if (recalled.length > 0 && clauseResults.length === 0) {
+                throw new Error('全部合同条款的 AI 审查均未完成。');
+            }
         }
         analysisResult.relevant_laws = await annotateKnowledgeUpdates(relevantKnowledge);
         analysisResult.company_search = companySearchResults;
@@ -402,8 +404,8 @@ ${clause.text}
         if (getIoInstance()) getIoInstance().to(`contract-${contractId}`).emit('analysis-complete', { results: analysisResult, perspective: userPerspective });
     } catch (error) {
         console.error('Error during background AI analysis:', error);
-        const publicError = /timed?\s*out|timeout/i.test(String(error?.message || ''))
-            ? 'AI 审查等待超过 5 分钟，已停止本次任务。合同文件和已完成步骤均已保留，请稍后重新审查。'
+        const publicError = /timed?\s*out|timeout|504/i.test(String(error?.message || ''))
+            ? 'AI 审查在模型网关等待超时，已停止本次任务。合同文件和已完成步骤均已保留，请稍后重新审查。'
             : `分析失败：${error.message}`;
         updateAnalysisJob(contractId, { status: 'failed', error: publicError });
         await emitAnalysisProgress(null, contractId, { step: 'failed', status: 'failed', message: publicError });

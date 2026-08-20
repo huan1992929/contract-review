@@ -34,6 +34,11 @@ const getReviewLlmRequestOptions = (env = process.env) => ({
     maxRetries: parseNonNegativeNumber(env.REVIEW_LLM_MAX_RETRIES, 0),
 });
 
+const FULL_DOCUMENT_REVIEW_MAX_CHARS = 6000;
+const shouldUseSegmentedReview = (charCount) => (
+    Number(charCount) >= FULL_DOCUMENT_REVIEW_MAX_CHARS
+);
+
 const callJsonLLM = async (prompt, requestOptions = {}) => {
     const completion = await createChatCompletion({
         messages: [{ role: 'user', content: prompt }],
@@ -45,5 +50,7 @@ const callJsonLLM = async (prompt, requestOptions = {}) => {
 module.exports = {
     cleanJsonResponse,
     getReviewLlmRequestOptions,
+    FULL_DOCUMENT_REVIEW_MAX_CHARS,
+    shouldUseSegmentedReview,
     callJsonLLM,
 };

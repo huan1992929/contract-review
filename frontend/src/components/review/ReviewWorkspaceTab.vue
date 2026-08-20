@@ -147,6 +147,7 @@
         <div class="flex justify-between text-xs text-text-light mb-3">
           <span>已用时：{{ formatDuration(analysisElapsed) }}</span>
           <span v-if="analysisEta > 0">预计剩余：{{ formatDuration(analysisEta) }}</span>
+          <span v-else>仍在处理中，超时会自动结束</span>
         </div>
         <div v-if="analysisSteps.length" class="analysis-progress mt-2 w-full">
           <div

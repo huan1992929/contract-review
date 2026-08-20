@@ -1,7 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { getReviewLlmRequestOptions } = require('../services/contractAnalysis/llm');
+const {
+    getReviewLlmRequestOptions,
+    shouldUseSegmentedReview,
+} = require('../services/contractAnalysis/llm');
 
 test('full contract review waits up to five minutes without duplicate retries', () => {
     assert.deepEqual(getReviewLlmRequestOptions({}), {
@@ -28,4 +31,10 @@ test('invalid full contract review timeout policy falls back safely', () => {
         timeout: 300000,
         maxRetries: 0,
     });
+});
+
+test('near-threshold contracts use segmented review before monolithic output becomes unstable', () => {
+    assert.equal(shouldUseSegmentedReview(5999), false);
+    assert.equal(shouldUseSegmentedReview(6000), true);
+    assert.equal(shouldUseSegmentedReview(7569), true);
 });

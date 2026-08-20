@@ -34,7 +34,7 @@ const ANALYSIS_STEPS = [
     { key: 'knowledge_search', label: '检索法条与案例依据', weight: 18, estSeconds: 15 },
     { key: 'company_search', label: '核验合同主体信息', weight: 12, estSeconds: 12 },
     { key: 'rule_check', label: '硬性合规检查', weight: 5, estSeconds: 3 },
-    { key: 'llm_review', label: 'AI 生成审查结论', weight: 50, estSeconds: 60 },
+    { key: 'llm_review', label: 'AI 生成审查结论', weight: 50, estSeconds: 180 },
     { key: 'seal_analysis', label: '印章与签章核验', weight: 7, estSeconds: 8 },
     { key: 'finalize', label: '保存审查结果', weight: 3, estSeconds: 2 },
 ];
