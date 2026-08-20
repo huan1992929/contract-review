@@ -33,6 +33,7 @@ const standardRoutes = require('./routes/standards');
 const authRoutes = require('./routes/auth');
 const { requireSession, parseCookies, verifySession } = require('./services/appAuth');
 const { seedTemplatesIfEmpty } = require('./services/reviewTemplates');
+const { findOwnedContract } = require('./services/contractAnalysis/auth');
 const { seedLawsFromMarkdown, seedCasesFromJson, syncAllVectorDocuments } = require('./services/vectorStore');
 const db = require('./database');
 const resetAndRebuildDatabase = require('./database-check');
@@ -73,21 +74,17 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
-  socket.on('join-contract', (contractId) => {
+  socket.on('join-contract', async (contractId) => {
+    const userId = Number(socket.authUser?.sub);
+    const contract = await findOwnedContract(contractId, userId).catch(() => null);
+    if (!contract) {
+      socket.emit('contract-access-denied', { contractId: Number(contractId) });
+      return;
+    }
     socket.join(`contract-${contractId}`);
     console.log(`User ${socket.id} joined room: contract-${contractId}`);
     // Notify others in the room
     socket.to(`contract-${contractId}`).emit('user-joined', { userId: socket.id });
-  });
-
-  socket.on('analysis-started', (data) => {
-    // data should contain contractId and perhaps user info
-    socket.to(`contract-${data.contractId}`).emit('analysis-progress', { status: 'started', user: data.user });
-  });
-
-  socket.on('analysis-finished', (data) => {
-    // Broadcast analysis results to everyone in the room
-    io.to(`contract-${data.contractId}`).emit('analysis-complete', data.results);
   });
 
   socket.on('disconnect', () => {
@@ -127,6 +124,9 @@ app.get('/', (req, res) => {
 // Multer 错误处理中间件：文件大小超限、格式不支持等返回 JSON
 app.use((err, req, res, next) => {
   if (err) {
+    if (err.status) {
+      return res.status(err.status).json({ error: '思库登录状态无效或没有合同审核权限。', code: err.message });
+    }
     if (err.code === 'LIMIT_FILE_SIZE') {
       return res.status(413).json({ error: '文件大小超过 50MB 限制，请压缩或拆分后上传。', code: 'FILE_TOO_LARGE' });
     }

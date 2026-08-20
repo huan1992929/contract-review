@@ -18,6 +18,10 @@
  */
 const db = require('../../database');
 const { searchVectorDocumentsMulti, splitIntoParagraphGroups } = require('../vectorStore');
+const {
+    isThinkParkKnowledgeGatewayEnabled,
+    searchThinkParkKnowledge,
+} = require('../thinkparkKnowledgeGateway');
 
 // 合同正文段落 chunk 检索上限：0 = 不限；超过部分不再生成子 query，控制长合同的检索成本
 const CONTRACT_CHUNK_MAX = Math.max(0, Number(process.env.CONTRACT_CHUNK_MAX || 0));
@@ -141,6 +145,9 @@ const mergeChannelsWithConfidence = (channelA, channelB, limit) => {
 //   通道 B「合同内容」捞审查点未覆盖的非常规条款，补充，占 1/3 配额，每条 query 仅 top-1 且强阈值
 // CONTRACT_CHUNK_MAX > 0 时限制通道 B 的 chunk 数，控制长合同检索成本
 const getRelevantKnowledge = async (options, limit = 8) => {
+    if (isThinkParkKnowledgeGatewayEnabled()) {
+        return searchThinkParkKnowledge(options, limit);
+    }
     const sourceTypes = ['law', 'case', 'rule', 'guide'];
 
     // 字符串入口（纯文本）：单通道，按段落归并检索

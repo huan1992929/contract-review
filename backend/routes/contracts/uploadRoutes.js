@@ -24,11 +24,16 @@ const { v4: uuidv4 } = require('uuid');
 const unidecode = require('unidecode');
 const db = require('../../database');
 const { ensureUploadUser } = require('../../services/contractAnalysis/knowledge');
-const { buildOnlyOfficeConfig, normalizeOnlyOfficeDownloadUrl } = require('../../services/contractAnalysis/onlyoffice');
+const {
+    buildOnlyOfficeConfig,
+    normalizeOnlyOfficeDownloadUrl,
+    verifyOnlyOfficeCallback,
+} = require('../../services/contractAnalysis/onlyoffice');
 const { extractTextFromFile } = require('../../services/contractAnalysis/fileExtraction');
 const { getIoInstance } = require('../../services/contractAnalysis/analysisJob');
 const { diffClauses } = require('../../services/incrementalReview');
 const { syncRevisionGroupsFromDocx } = require('../../services/contractAnalysis/docxEdit');
+const { mirrorContractFile } = require('../../services/thinkparkStorageGateway');
 
 const ALLOWED_EXTENSIONS = ['.docx', '.pdf'];
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -79,6 +84,16 @@ module.exports = function (router) {
 
                 const contractRecord = newContract || await trx('contracts').where({ document_key: documentKey }).first();
                 const ext = path.extname(contractRecord.storage_path).toLowerCase().replace('.', '');
+                const owner = await trx('users').where({ id: contractRecord.user_id }).select('fingerprint_id').first();
+                const mirrored = await mirrorContractFile(contractRecord.storage_path, {
+                    owner: owner?.fingerprint_id || `user-${contractRecord.user_id}`,
+                    contractId: contractRecord.id,
+                    version: 'source',
+                });
+                await trx('contracts').where({ id: contractRecord.id }).update({
+                    oss_key: mirrored.oss_key,
+                    oss_sha256: mirrored.sha256,
+                });
                 // Build the editor configuration before the transaction commits. If the
                 // ONLYOFFICE/JWT configuration is incomplete, the contract row is rolled
                 // back instead of leaving an orphaned upload record.
@@ -106,6 +121,12 @@ module.exports = function (router) {
     });
 
     router.post('/save-callback', async (req, res) => {
+        try {
+            verifyOnlyOfficeCallback(req.header('Authorization'));
+        } catch (error) {
+            console.warn('[OnlyOffice] rejected unsigned or invalid save callback:', error.message);
+            return res.status(200).json({ error: 1 });
+        }
         try {
             const body = req.body;
             console.log('[OnlyOffice] save callback:', {
@@ -144,6 +165,14 @@ module.exports = function (router) {
                         }
                     }
                     const contractUpdate = { updated_at: db.fn.now() };
+                    const owner = await db('users').where({ id: contract.user_id }).select('fingerprint_id').first();
+                    const mirrored = await mirrorContractFile(contract.storage_path, {
+                        owner: owner?.fingerprint_id || `user-${contract.user_id}`,
+                        contractId: contract.id,
+                        version: `onlyoffice-${Date.now()}`,
+                    });
+                    contractUpdate.oss_key = mirrored.oss_key;
+                    contractUpdate.oss_sha256 = mirrored.sha256;
                     if (revisionSync.changed) contractUpdate.analysis_result = JSON.stringify(revisionSync.analysis);
                     if (requiresReload) contractUpdate.document_key = nextDocumentKey;
                     await db('contracts').where({ id: contract.id }).update(contractUpdate);
@@ -208,7 +237,7 @@ module.exports = function (router) {
             res.status(200).json({ error: 0 });
         } catch (error) {
             console.error('[ERROR] Save callback failed:', error);
-            res.status(200).json({ error: 0 });
+            res.status(200).json({ error: 1 });
         }
     });
 };

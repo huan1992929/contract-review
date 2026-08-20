@@ -33,9 +33,13 @@ export function useReviewSocket(state, deps) {
     const setupSocket = (contractId) => {
         if (socket.value) socket.value.disconnect();
 
+        const appBasePath = String(import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
         const defaultBackendUrl = import.meta.env.PROD ? window.location.origin : 'http://localhost:3000';
         const backendUrl = import.meta.env.VITE_APP_BACKEND_API_URL || defaultBackendUrl;
-        socket.value = io(backendUrl, { withCredentials: true });
+        socket.value = io(backendUrl, {
+            withCredentials: true,
+            path: import.meta.env.PROD ? `${appBasePath}socket.io` : '/socket.io',
+        });
 
         socket.value.on('connect', () => {
             console.log('Connected to collaboration server');

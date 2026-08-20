@@ -25,17 +25,25 @@ const ONLYOFFICE_URL = process.env.ONLYOFFICE_URL || 'http://localhost:8081';
 const APP_HOST = process.env.APP_HOST;
 const BACKEND_URL_FOR_DOCKER = process.env.BACKEND_URL_FOR_DOCKER || APP_HOST;
 
-const normalizeOnlyOfficeDownloadUrl = (rawUrl) => {
+const normalizeOnlyOfficeDownloadUrl = (rawUrl, targetBase = ONLYOFFICE_URL) => {
     const parsed = new URL(rawUrl);
     let pathname = parsed.pathname;
     if (pathname.startsWith('/onlyoffice/')) pathname = pathname.slice('/onlyoffice'.length);
     if (!pathname.startsWith('/')) pathname = `/${pathname}`;
 
-    const internalBase = new URL(ONLYOFFICE_URL.endsWith('/') ? ONLYOFFICE_URL : `${ONLYOFFICE_URL}/`);
-    internalBase.pathname = pathname;
+    const internalBase = new URL(targetBase.endsWith('/') ? targetBase : `${targetBase}/`);
+    const basePrefix = internalBase.pathname.replace(/\/$/, '');
+    internalBase.pathname = `${basePrefix}${pathname}`;
     internalBase.search = parsed.search;
     internalBase.hash = '';
     return internalBase.toString();
+};
+
+const verifyOnlyOfficeCallback = (authorization) => {
+    if (!ONLYOFFICE_JWT_SECRET) throw new Error('ONLYOFFICE_JWT_SECRET_REQUIRED');
+    const header = String(authorization || '');
+    if (!header.startsWith('Bearer ')) throw new Error('ONLYOFFICE_CALLBACK_TOKEN_REQUIRED');
+    return jwt.verify(header.slice(7).trim(), ONLYOFFICE_JWT_SECRET);
 };
 
 const buildOnlyOfficeConfig = (contractRecord, ext = 'docx', options = {}) => {
@@ -126,6 +134,7 @@ module.exports = {
     APP_HOST,
     BACKEND_URL_FOR_DOCKER,
     normalizeOnlyOfficeDownloadUrl,
+    verifyOnlyOfficeCallback,
     buildOnlyOfficeConfig,
     postOnlyOfficeCommand,
 };

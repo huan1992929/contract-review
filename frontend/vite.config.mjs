@@ -6,6 +6,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
 
   return {
+    base: env.BASE_URL || '/',
     plugins: [vue()],
     resolve: {
       alias: {

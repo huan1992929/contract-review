@@ -1,9 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
-const Home = () => import('../views/Home.vue')
 const Review = () => import('../views/Review.vue')
-const QnA = () => import('../views/QnA.vue')
-const Settings = () => import('../views/Settings.vue')
 const Login = () => import('../views/Login.vue')
 import { ensureSession } from '../auth'
 
@@ -16,8 +13,7 @@ const routes = [
   },
   {
     path: '/',
-    name: 'Home',
-    component: Home
+    redirect: '/review'
   },
   {
     path: '/review',
@@ -28,20 +24,10 @@ const routes = [
     path: '/history',
     redirect: '/'
   },
-  {
-    path: '/qna',
-    name: 'QnA',
-    component: QnA
-  },
-  {
-    path: '/settings',
-    name: 'Settings',
-    component: Settings
-  }
 ]
 
 const router = createRouter({
-  history: createWebHistory(process.env.BASE_URL),
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes,
   scrollBehavior() {
     return { top: 0, left: 0 };

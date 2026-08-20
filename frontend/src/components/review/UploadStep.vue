@@ -1,7 +1,7 @@
 <template>
   <div class="upload-stage flex-grow overflow-y-auto flex flex-col items-center py-8 px-4 text-center">
     <p class="upload-kicker">ZHONG AN GROUP · INTERNAL REVIEW</p>
-    <h1 class="text-3xl font-bold tracking-tight text-text-dark sm:text-4xl">众安集团合同审核</h1>
+    <h1 class="text-3xl font-bold tracking-tight text-text-dark sm:text-4xl">思库合同审核</h1>
     <p class="mt-3 text-sm leading-7 text-text-light">上传待审合同，系统将依托内部范本、法规、案例与审查要点形成修改意见。</p>
 
     <div class="mt-10 w-full max-w-2xl">

@@ -109,6 +109,8 @@ async function resetAndRebuildDatabase() {
     await ensureColumn('contracts', 'analysis_partial_result', (table) => table.text('analysis_partial_result'));
     await ensureColumn('contracts', 'analysis_status', (table) => table.string('analysis_status'));
     await ensureColumn('contracts', 'group_id', (table) => table.integer('group_id').unsigned());
+    await ensureColumn('contracts', 'oss_key', (table) => table.text('oss_key'));
+    await ensureColumn('contracts', 'oss_sha256', (table) => table.string('oss_sha256', 64));
 
     const hasContractVersionsTable = await db.schema.hasTable('contract_versions');
     if (!hasContractVersionsTable) {
@@ -125,6 +127,8 @@ async function resetAndRebuildDatabase() {
         table.index(['contract_id', 'version_no']);
       });
     }
+    await ensureColumn('contract_versions', 'oss_key', (table) => table.text('oss_key'));
+    await ensureColumn('contract_versions', 'oss_sha256', (table) => table.string('oss_sha256', 64));
 
     const hasContractGroupsTable = await db.schema.hasTable('contract_groups');
     if (!hasContractGroupsTable) {
@@ -154,6 +158,7 @@ async function resetAndRebuildDatabase() {
         });
         console.log('[DB Init] New `qa_history` table created successfully.');
     }
+    await ensureColumn('qa_history', 'user_id', (table) => table.integer('user_id').unsigned().references('id').inTable('users').onDelete('CASCADE').index());
 
     const hasFocusedReviewsTable = await db.schema.hasTable('focused_reviews');
     if (!hasFocusedReviewsTable) {

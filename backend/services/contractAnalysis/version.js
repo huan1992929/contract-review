@@ -19,6 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { extractTextFromFile } = require('./fileExtraction');
+const { mirrorContractFile } = require('../thinkparkStorageGateway');
 
 const createContractVersionSnapshot = async (contract, sourceAction = 'replace-text') => {
     const [{ next_version_no: nextVersionNo }] = await db('contract_versions')
@@ -38,6 +39,11 @@ const createContractVersionSnapshot = async (contract, sourceAction = 'replace-t
         plainText = '';
     }
 
+    const mirrored = await mirrorContractFile(snapshotPath, {
+        owner: `user-${contract.user_id}`,
+        contractId: contract.id,
+        version: `snapshot-${versionNo}`,
+    });
     const [version] = await db('contract_versions').insert({
         contract_id: contract.id,
         user_id: contract.user_id,
@@ -45,6 +51,8 @@ const createContractVersionSnapshot = async (contract, sourceAction = 'replace-t
         source_action: sourceAction,
         storage_path: snapshotPath,
         plain_text: plainText,
+        oss_key: mirrored.oss_key,
+        oss_sha256: mirrored.sha256,
     }).returning(['id', 'version_no', 'created_at', 'source_action']);
 
     return version || { version_no: versionNo, source_action: sourceAction };

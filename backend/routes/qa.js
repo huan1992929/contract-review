@@ -28,6 +28,7 @@ const { searchVectorDocumentsMulti } = require('../services/vectorStore');
 const { searchWeb } = require('../services/webSearch');
 const { createChatCompletion } = require('../services/llmClient');
 const { isKnowledgeBaseOnlyMode } = require('../services/reviewPolicy');
+const { requireRequestUserId, findOwnedContract } = require('../services/contractAnalysis/auth');
 
 const router = express.Router();
 
@@ -179,11 +180,12 @@ const buildEvidencePrompt = ({ contextText, knowledgeResults, webResults, toolTr
     ].join('\n');
 };
 
-const buildQaContext = async ({ question, contractId, history = [] }) => {
+const buildQaContext = async ({ question, contractId, userId, history = [] }) => {
     let contextText = '';
     if (contractId) {
-        const contract = await db('contracts').where({ id: contractId }).first();
-        if (contract) contextText = await extractTextFromFile(contract.storage_path);
+        const contract = await findOwnedContract(contractId, userId);
+        if (!contract) throw new Error('CONTRACT_NOT_FOUND');
+        contextText = await extractTextFromFile(contract.storage_path);
     }
 
     const normalizedHistory = normalizeHistory(history);
@@ -222,17 +224,20 @@ const buildQaContext = async ({ question, contractId, history = [] }) => {
     return { llmMessages, knowledgeResults, webResults, toolTrace };
 };
 
-const saveMessage = (sessionId, role, content, contractId) => db('qa_history').insert({
+const saveMessage = (sessionId, role, content, contractId, userId) => db('qa_history').insert({
     session_id: sessionId,
     role,
     content,
     contract_id: contractId || null,
+    user_id: userId,
 });
 
 router.get('/history/:sessionId', async (req, res) => {
+    const userId = requireRequestUserId(req, res);
+    if (!userId) return;
     try {
         const query = db('qa_history')
-            .where({ session_id: req.params.sessionId });
+            .where({ session_id: req.params.sessionId, user_id: userId });
         // 支持按 contract_id 过滤，使不同合同的问答历史相互独立
         const contractId = req.query.contractId || req.query.contract_id;
         if (contractId !== undefined && contractId !== '' && contractId !== 'null') {
@@ -254,15 +259,17 @@ router.get('/history/:sessionId', async (req, res) => {
 router.post('/ask', async (req, res) => {
     const { question, sessionId, contractId, history = [] } = req.body;
     if (!question) return res.status(400).json({ error: 'Question is required.' });
+    const userId = requireRequestUserId(req, res);
+    if (!userId) return;
 
     try {
-        await saveMessage(sessionId, 'user', question, contractId);
-        const { llmMessages, webResults, toolTrace } = await buildQaContext({ question, contractId, history });
+        const { llmMessages, webResults, toolTrace } = await buildQaContext({ question, contractId, userId, history });
+        await saveMessage(sessionId, 'user', question, contractId, userId);
         const completion = await createChatCompletion({
             messages: llmMessages,
         });
         const answer = String(completion.choices[0].message.content || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-        await saveMessage(sessionId, 'assistant', answer, contractId);
+        await saveMessage(sessionId, 'assistant', answer, contractId, userId);
         res.json({
             answer,
             meta: {
@@ -280,6 +287,8 @@ router.post('/ask', async (req, res) => {
 router.post('/ask-stream', async (req, res) => {
     const { question, sessionId, contractId, history = [] } = req.body;
     if (!question) return res.status(400).json({ error: 'Question is required.' });
+    const userId = requireRequestUserId(req, res);
+    if (!userId) return;
 
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -292,8 +301,8 @@ router.post('/ask-stream', async (req, res) => {
     };
 
     try {
-        await saveMessage(sessionId, 'user', question, contractId);
-        const { llmMessages, webResults, toolTrace } = await buildQaContext({ question, contractId, history });
+        const { llmMessages, webResults, toolTrace } = await buildQaContext({ question, contractId, userId, history });
+        await saveMessage(sessionId, 'user', question, contractId, userId);
         send('meta', {
             webSearchUsed: webResults.length > 0,
             verifiedWebResults: webResults.filter((item) => item.verified).length,
@@ -313,7 +322,7 @@ router.post('/ask-stream', async (req, res) => {
         }
 
         answer = answer.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-        await saveMessage(sessionId, 'assistant', answer, contractId);
+        await saveMessage(sessionId, 'assistant', answer, contractId, userId);
         send('done', { answer });
         res.end();
     } catch (error) {

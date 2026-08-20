@@ -16,6 +16,7 @@ const {
 } = require('../../services/contractAnalysis/docxEdit');
 const { buildOnlyOfficeConfig } = require('../../services/contractAnalysis/onlyoffice');
 const { getIoInstance } = require('../../services/contractAnalysis/analysisJob');
+const { mirrorContractFile } = require('../../services/thinkparkStorageGateway');
 
 const parseAnalysisResult = (contract) => {
     try {
@@ -89,9 +90,16 @@ const docxErrorResponse = (res, error, fallback) => {
 
 const updateContractAfterApply = async (contract, nextKey, analysis, appliedIndexes, mode, revisionGroups = new Map()) => {
     const updatedAnalysis = markSuggestionApplied(analysis, appliedIndexes, mode, nextKey, revisionGroups);
+    const mirrored = await mirrorContractFile(contract.storage_path, {
+        owner: `user-${contract.user_id}`,
+        contractId: contract.id,
+        version: `${mode}-${Date.now()}`,
+    });
     await db('contracts').where({ id: contract.id }).update({
         document_key: nextKey,
         analysis_result: JSON.stringify(updatedAnalysis),
+        oss_key: mirrored.oss_key,
+        oss_sha256: mirrored.sha256,
         updated_at: db.fn.now(),
     });
 };
@@ -385,6 +393,15 @@ module.exports = function (router) {
                     analysis_result: JSON.stringify(syncResult.analysis),
                     updated_at: db.fn.now(),
                 };
+                if (syncResult.documentChanged) {
+                    const mirrored = await mirrorContractFile(contract.storage_path, {
+                        owner: `user-${contract.user_id}`,
+                        contractId: contract.id,
+                        version: `revision-sync-${Date.now()}`,
+                    });
+                    update.oss_key = mirrored.oss_key;
+                    update.oss_sha256 = mirrored.sha256;
+                }
                 if (requiresReload) update.document_key = nextKey;
                 await db('contracts').where({ id: contract.id }).update(update);
                 for (const revision of syncResult.results.filter((item) => ['accepted', 'rejected'].includes(item.status))) {
@@ -441,9 +458,18 @@ module.exports = function (router) {
             }
 
             updateResolvedSuggestion(analysis, suggestionIndex, resolution, nextKey);
+            const mirrored = result.changed
+                ? await mirrorContractFile(contract.storage_path, {
+                    owner: `user-${contract.user_id}`,
+                    contractId: contract.id,
+                    version: `revision-${resolution}-${Date.now()}`,
+                })
+                : { oss_key: contract.oss_key, sha256: contract.oss_sha256 };
             await db('contracts').where({ id: contract.id }).update({
                 document_key: nextKey,
                 analysis_result: JSON.stringify(analysis),
+                oss_key: mirrored.oss_key,
+                oss_sha256: mirrored.sha256,
                 updated_at: db.fn.now(),
             });
             const ext = path.extname(contract.storage_path).toLowerCase().replace('.', '');

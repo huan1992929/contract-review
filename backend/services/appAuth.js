@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 
 const SESSION_COOKIE = 'za_review_session';
 const SESSION_TTL_SECONDS = Number(process.env.AUTH_SESSION_TTL_SECONDS || 12 * 60 * 60);
+const SESSION_COOKIE_PATH = String(process.env.AUTH_COOKIE_PATH || '/').trim() || '/';
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
     const derived = crypto.scryptSync(String(password), salt, 64);
@@ -64,7 +65,7 @@ function sessionCookie(token) {
     const secure = process.env.AUTH_COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production' && process.env.APP_HOST?.startsWith('https://');
     return [
         `${SESSION_COOKIE}=${encodeURIComponent(token)}`,
-        'Path=/',
+        `Path=${SESSION_COOKIE_PATH}`,
         'HttpOnly',
         'SameSite=Lax',
         secure ? 'Secure' : '',
@@ -73,7 +74,7 @@ function sessionCookie(token) {
 }
 
 function clearSessionCookie() {
-    return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+    return `${SESSION_COOKIE}=; Path=${SESSION_COOKIE_PATH}; HttpOnly; SameSite=Lax; Max-Age=0`;
 }
 
 function requireSession(req, res, next) {

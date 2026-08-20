@@ -1,6 +1,6 @@
 <template>
   <div class="header-component">
-    <img src="/asserts/zhongan-logo.png" alt="众安集团" class="logo">
+    <strong class="logo">THINK OPEN</strong>
     <div>
       <h1>合同审核</h1>
       <p>INTERNAL REVIEW</p>

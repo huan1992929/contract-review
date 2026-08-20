@@ -4,7 +4,12 @@ const assert = require('node:assert/strict');
 process.env.ONLYOFFICE_URL = 'http://onlyoffice';
 process.env.ONLYOFFICE_JWT_SECRET = process.env.ONLYOFFICE_JWT_SECRET || 'test-onlyoffice-secret';
 
-const { buildOnlyOfficeConfig, normalizeOnlyOfficeDownloadUrl } = require('../services/contractAnalysis/onlyoffice');
+const jwt = require('jsonwebtoken');
+const {
+    buildOnlyOfficeConfig,
+    normalizeOnlyOfficeDownloadUrl,
+    verifyOnlyOfficeCallback,
+} = require('../services/contractAnalysis/onlyoffice');
 const {
     paragraphText,
     replaceTextInXmlRuns,
@@ -23,6 +28,20 @@ test('ONLYOFFICE callback URLs are rewritten to the internal document server', (
         'http://127.0.0.1:18081/onlyoffice/cache/files/output.docx?token=abc',
     );
     assert.equal(normalized, 'http://onlyoffice/cache/files/output.docx?token=abc');
+    assert.equal(
+        normalizeOnlyOfficeDownloadUrl(
+            'http://127.0.0.1:18081/onlyoffice/cache/files/output.docx?token=abc',
+            'https://ai.thinkpark.com.cn/onlyoffice',
+        ),
+        'https://ai.thinkpark.com.cn/onlyoffice/cache/files/output.docx?token=abc',
+    );
+});
+
+test('ONLYOFFICE save callbacks require a valid document-server JWT', () => {
+    const token = jwt.sign({ status: 2, key: 'doc-key' }, process.env.ONLYOFFICE_JWT_SECRET);
+    assert.equal(verifyOnlyOfficeCallback(`Bearer ${token}`).key, 'doc-key');
+    assert.throws(() => verifyOnlyOfficeCallback(''), /TOKEN_REQUIRED/);
+    assert.throws(() => verifyOnlyOfficeCallback('Bearer invalid-token'));
 });
 
 test('ONLYOFFICE review mode tracks changes without opening the review navigator', () => {

@@ -1,8 +1,8 @@
 <template>
   <div id="app">
     <header v-if="!isLoginPage" class="app-header">
-      <router-link to="/" class="brand" aria-label="众安集团合同审核首页">
-        <img src="/asserts/zhongan-logo.png" alt="众安集团" />
+      <router-link to="/" class="brand" aria-label="思库合同审核首页">
+        <span class="brand-wordmark">THINK <em>OPEN</em></span>
         <span class="brand-divider" aria-hidden="true"></span>
         <span class="brand-copy">
           <strong>合同审核</strong>
@@ -11,19 +11,16 @@
       </router-link>
       <div class="header-actions">
         <nav class="app-nav" aria-label="主导航">
-          <router-link to="/" class="nav-link" active-class="nav-link-active">工作台</router-link>
           <router-link to="/review" class="nav-link" active-class="nav-link-active">合同审核</router-link>
-          <router-link to="/qna" class="nav-link" active-class="nav-link-active">智能问答</router-link>
-          <router-link to="/settings" class="nav-link" active-class="nav-link-active">知识库</router-link>
         </nav>
-        <span class="poc-badge"><i></i>内部试用</span>
+        <span class="poc-badge"><i></i>企业法务</span>
         <div v-if="authState.user" class="account-control">
           <span class="account-avatar">{{ accountInitial }}</span>
           <span class="account-copy">
             <strong>{{ authState.user.displayName }}</strong>
             <small>{{ authState.user.username }}</small>
           </span>
-          <button type="button" class="logout-button" @click="handleLogout">退出</button>
+          <button type="button" class="logout-button" @click="handleBackToTeam">返回 AI 团队</button>
         </div>
       </div>
     </header>
@@ -34,16 +31,15 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { authState, logout, markSessionExpired } from './auth';
+import { authState, markSessionExpired } from './auth';
 
 const route = useRoute();
 const router = useRouter();
 const isLoginPage = computed(() => route.name === 'Login');
 const accountInitial = computed(() => String(authState.user?.displayName || authState.user?.username || 'Z').slice(0, 1).toUpperCase());
 
-async function handleLogout() {
-  await logout();
-  await router.replace('/login');
+function handleBackToTeam() {
+  window.location.assign('/agents');
 }
 
 function handleExpired() {
@@ -141,6 +137,18 @@ select:focus-visible,
 .brand img {
   width: 118px;
   height: auto;
+}
+
+.brand-wordmark {
+  color: #232142;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: .04em;
+}
+
+.brand-wordmark em {
+  color: #7a1f3d;
+  font-style: normal;
 }
 
 .brand-divider {
