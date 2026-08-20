@@ -18,8 +18,8 @@
             <span v-if="item.record_type === 'group'" class="record-type">多合同</span>
             {{ item.original_filename }}
           </td>
-          <td class="type-cell">{{ item.contract_type || '—' }}</td>
-          <td class="perspective-cell">{{ item.perspective || '—' }}</td>
+          <td class="type-cell" :title="item.contract_type || ''">{{ item.contract_type || '—' }}</td>
+          <td class="perspective-cell" :title="item.perspective || ''">{{ item.perspective || '—' }}</td>
           <td class="risk-cell">
             <span v-if="item.risk_count > 0" class="risk-pill">{{ item.risk_count }}</span>
             <span v-else>—</span>
@@ -96,6 +96,14 @@ export default {
   background: #fafafa;
 }
 
+.record-table th:nth-child(1) { width: 20%; }
+.record-table th:nth-child(2) { width: 25%; }
+.record-table th:nth-child(3) { width: 19%; }
+.record-table th:nth-child(4) { width: 7%; }
+.record-table th:nth-child(5) { width: 10%; }
+.record-table th:nth-child(6) { width: 8%; }
+.record-table th:nth-child(7) { width: 11%; }
+
 .file-cell {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -138,8 +146,10 @@ export default {
 
 .type-cell,
 .perspective-cell {
+  overflow: hidden;
   color: #666;
   font-size: 12px;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
