@@ -32,7 +32,7 @@ services:
       POSTGRES_PORT: "5432"
       VECTOR_STORE: postgres
       REVIEW_KB_ONLY_MODE: "true"
-      REVIEW_TEMPLATE_PROFILE: zhongan
+      REVIEW_TEMPLATE_PROFILE: thinkpark
       THINKPARK_SSO_ENABLED: "true"
       THINKPARK_STORAGE_REQUIRED: "true"
       AUTH_COOKIE_PATH: /contract-review

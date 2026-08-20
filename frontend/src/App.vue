@@ -11,6 +11,7 @@
       </router-link>
       <div class="header-actions">
         <nav class="app-nav" aria-label="主导航">
+          <router-link to="/" class="nav-link" active-class="nav-link-active" exact-active-class="nav-link-active">首页</router-link>
           <router-link to="/review" class="nav-link" active-class="nav-link-active">合同审核</router-link>
         </nav>
         <span class="poc-badge"><i></i>企业法务</span>
@@ -36,7 +37,7 @@ import { authState, markSessionExpired } from './auth';
 const route = useRoute();
 const router = useRouter();
 const isLoginPage = computed(() => route.name === 'Login');
-const accountInitial = computed(() => String(authState.user?.displayName || authState.user?.username || 'Z').slice(0, 1).toUpperCase());
+const accountInitial = computed(() => String(authState.user?.displayName || authState.user?.username || '思').slice(0, 1).toUpperCase());
 
 function handleBackToTeam() {
   window.location.assign('/agents');

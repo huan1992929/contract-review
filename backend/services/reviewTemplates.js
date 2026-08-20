@@ -25,12 +25,12 @@ const { embedText } = require('./embeddingClient');
 
 const TEMPLATE_PROFILES = {
     default: 'reviewTemplates.json',
-    zhongan: 'zhonganReviewTemplates.json',
+    thinkpark: 'thinkparkReviewTemplates.json',
 };
 
-// 众安部署默认使用地产专用模板；其他环境可显式设置 REVIEW_TEMPLATE_PROFILE=default。
+// 思库部署默认使用法务助手知识库对应的业务模板。
 const getConfiguredTemplateProfile = () => {
-    const requested = String(process.env.REVIEW_TEMPLATE_PROFILE || 'zhongan').trim().toLowerCase();
+    const requested = String(process.env.REVIEW_TEMPLATE_PROFILE || 'thinkpark').trim().toLowerCase();
     return TEMPLATE_PROFILES[requested] ? requested : 'default';
 };
 
@@ -124,18 +124,13 @@ const buildSeedRow = async (template) => {
     };
 };
 
-// 首次启用品牌模板时停用旧系统模板并导入品牌模板。以完整 ID 集为幂等标记，
-// 后续重启不会覆盖管理员在线编辑或启停的结果。
+// 每次启动对配置的系统模板做幂等同步，确保知识库模板更新能进入现网。
+// 非当前 profile 的系统模板仅停用；生产物理删除由发布脚本在备份后执行。
 const activateConfiguredTemplateProfile = async (templates) => {
     if (getConfiguredTemplateProfile() === 'default' || templates.length === 0) {
         return { activated: false };
     }
     const ids = templates.map((template) => template.id);
-    const existingRows = await db('review_templates').whereIn('id', ids).select('id');
-    if (existingRows.length === ids.length) {
-        return { activated: false, total: ids.length };
-    }
-
     const seedRows = [];
     for (const template of templates) {
         seedRows.push(await buildSeedRow(template));
@@ -165,7 +160,7 @@ const activateConfiguredTemplateProfile = async (templates) => {
                 });
         }
     });
-    console.log(`[reviewTemplates] Activated ${getConfiguredTemplateProfile()} profile with ${ids.length} templates.`);
+    console.log(`[reviewTemplates] Synchronized ${getConfiguredTemplateProfile()} profile with ${ids.length} templates.`);
     return { activated: true, total: ids.length };
 };
 

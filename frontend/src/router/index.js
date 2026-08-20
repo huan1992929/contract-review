@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 const Review = () => import('../views/Review.vue')
+const Home = () => import('../views/Home.vue')
 const Login = () => import('../views/Login.vue')
 import { ensureSession } from '../auth'
 
@@ -13,7 +14,8 @@ const routes = [
   },
   {
     path: '/',
-    redirect: '/review'
+    name: 'Home',
+    component: Home
   },
   {
     path: '/review',

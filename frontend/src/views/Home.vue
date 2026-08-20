@@ -25,7 +25,7 @@
     <section class="evidence-strip" aria-label="审查依据">
       <article>
         <span>01</span>
-        <div><strong>合同范本库</strong><small>五类业务标准范本</small></div>
+        <div><strong>合同范本库</strong><small>思库七类业务审查模板</small></div>
       </article>
       <article>
         <span>02</span>
@@ -196,8 +196,8 @@ export default {
 
 <style scoped>
 .home-page {
-  height: calc(100vh - 64px);
-  overflow: hidden;
+  min-height: calc(100vh - 64px);
+  overflow-x: hidden;
   background: transparent;
   color: var(--za-ink);
   font-size: 13px;

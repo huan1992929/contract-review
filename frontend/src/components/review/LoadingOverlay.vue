@@ -17,7 +17,7 @@
           <span v-else-if="analysisActive">仍在处理中，超时会自动结束并保留合同</span>
         </div>
         <div v-if="clauseProgress.total > 0" class="text-xs text-blue-600 mt-1">
-          已审查 {{ clauseProgress.reviewed }}/{{ clauseProgress.total }} 条款<span v-if="clauseProgress.current_clause_id">（当前：{{ clauseProgress.current_clause_id }}）</span>
+          已处理 {{ clauseProgress.reviewed }}/{{ clauseProgress.total }} 条款<span v-if="clauseProgress.current_clause_id">（最近：{{ clauseProgress.current_clause_id }}）</span>
         </div>
       </div>
 

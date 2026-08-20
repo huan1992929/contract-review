@@ -1,0 +1,65 @@
+[
+  {
+    "id": "thinkpark_client_creative_service",
+    "name": "思库·客户创意与综合服务合同",
+    "contract_type_keywords": ["创意服务", "综合服务", "品牌服务", "营销服务", "顾问服务", "思库创意"],
+    "review_points": ["服务范围与交付清单", "项目排期与客户确认节点", "服务费、税率与付款节点", "验收标准与异议期限", "需求变更与追加费用", "成果知识产权与素材授权", "客户配合义务与延误顺延", "保密、违约与解除"],
+    "core_purposes": ["明确思库作为乙方的服务边界", "确保付款与可验收成果对应", "控制变更、素材和客户延误责任", "保护思库既有方法论与知识产权"],
+    "report_sections": ["modification_suggestions", "template_differences", "breach_cost_analysis", "citations"],
+    "prompt_rules": ["以《思库创意服务合同模板（通用版）》等当前知识库文档为依据", "每项待优化项必须同时引用合同原文和知识库依据", "无直接依据时不得按通用经验报告风险"]
+  },
+  {
+    "id": "thinkpark_supplier_single_service",
+    "name": "思库·供应商单次服务与采购合同",
+    "contract_type_keywords": ["委托服务协议", "单次服务", "采购合同", "供应商", "服务采购", "供货"],
+    "review_points": ["服务内容、报价与附件一致性", "服务期限与延误处理", "交付报告与验收确认", "付款条件与发票", "质量承诺与返工", "成果和原始文件归属", "保密与第三方权利", "违约、解除与争议管辖"],
+    "core_purposes": ["保护思库作为采购方的验收和付款条件", "确保报价单和服务清单可执行", "保留延误、不合格和解除救济", "明确知识产权和保密责任"],
+    "report_sections": ["modification_suggestions", "template_differences", "breach_cost_analysis", "citations"],
+    "prompt_rules": ["以《委托服务协议-单次》及其服务、报价和质量附件为主要依据", "仅在合同原文与知识库模板存在实质偏离时输出建议", "不重复报告同一付款、验收或违约问题"]
+  },
+  {
+    "id": "thinkpark_supplier_framework",
+    "name": "思库·供应商年度框架服务合同",
+    "contract_type_keywords": ["年框", "年度框架", "框架协议", "需求单", "年度服务"],
+    "review_points": ["框架协议与需求单的效力顺序", "服务单下达与确认", "年框价格与追加项目", "各批次交付与验收", "结算对账与发票", "项目团队与人员替换", "质量、进度与返工", "框架解除与在途订单处理"],
+    "core_purposes": ["建立框架与订单的完整履约链", "避免框架价格和单项费用冲突", "保证分批验收与结算可追溯", "控制长期合作的人员和质量风险"],
+    "report_sections": ["modification_suggestions", "template_differences", "breach_cost_analysis", "citations"],
+    "prompt_rules": ["以《年框委托服务协议》及需求单类知识库文档为依据", "重点比对框架正文与需求单的冲突", "没有范本原文支持时不推导全局缺失条款"]
+  },
+  {
+    "id": "thinkpark_event_service",
+    "name": "思库·活动承办与会务服务合同",
+    "contract_type_keywords": ["活动承办", "会务服务", "会议服务", "活动执行", "会务用车", "会务接待", "综合服务委托单"],
+    "review_points": ["活动时间、地点与服务范围", "人员、车辆、物料与设备清单", "现场搭建、安全与管理责任", "临时变更与紧急预案", "交付证据与验收确认", "预付、尾款与发票", "取消、改期与不可抗力", "第三方损害和违约责任"],
+    "core_purposes": ["将会务和活动交付拆解为可验收项", "锁定现场安全和供应商管理责任", "控制取消、改期和临时增项费用", "保留活动完成和尾款结算证据"],
+    "report_sections": ["modification_suggestions", "template_differences", "breach_cost_analysis", "citations"],
+    "prompt_rules": ["以知识库中的《活动承办服务合同》《综合服务委托单》和会务类模板为依据", "只审查合同已涉及的服务品类", "关联问题合并为一项可执行建议"]
+  },
+  {
+    "id": "thinkpark_design_production",
+    "name": "思库·设计制作与版权素材合同",
+    "contract_type_keywords": ["设计制作", "创意设计", "物料制作", "视频制作", "版权素材", "视觉设计", "确认函"],
+    "review_points": ["设计任务与成果规格", "初稿、修改轮次与定稿确认", "源文件与制作文件交付", "费用与额外修改计价", "第三方素材授权范围", "成果权属与署名权", "客户提供素材责任", "侵权索赔与下架处理"],
+    "core_purposes": ["明确设计稿和源文件交付", "锁定修改轮次与追加费用", "确保第三方素材获得可证明授权", "区分新增成果与思库既有能力"],
+    "report_sections": ["modification_suggestions", "template_differences", "citations"],
+    "prompt_rules": ["以知识库中的设计制作年框协议和《客户使用版权素材确认函》为依据", "版权建议必须说明知识库文档来源", "不将简单文字表达问题扩大为版权风险"]
+  },
+  {
+    "id": "thinkpark_technology_service",
+    "name": "思库·互动与技术开发服务合同",
+    "contract_type_keywords": ["技术开发", "软件开发", "互动开发", "技术服务", "系统开发", "信息化", "AI服务"],
+    "review_points": ["需求说明与技术范围", "里程碑、交付物与验收", "源代码、设计文件和技术文档", "项目团队与关键人员", "需求变更与工期费用", "开发成果与开源软件权利", "数据安全与保密", "质保、维护和故障响应"],
+    "core_purposes": ["保证技术交付可测试和可验收", "获得源码、文档和必要知识产权", "控制变更、延期和维护成本", "确保数据和客户信息受控"],
+    "report_sections": ["modification_suggestions", "template_differences", "breach_cost_analysis", "citations"],
+    "prompt_rules": ["以知识库中的《技术开发服务协议-单次》和互动技术开发年框协议为依据", "必须区分开发成果、开源组件和供应商既有技术", "没有直接模板依据时不额外扩张合规要求"]
+  },
+  {
+    "id": "thinkpark_general",
+    "name": "思库·通用商务合同",
+    "contract_type_keywords": [],
+    "review_points": ["主体与签约信息", "标的、范围与附件", "价款、税费与付款", "交付与验收", "变更与终止", "知识产权与保密", "违约与损失范围", "争议解决与送达"],
+    "core_purposes": ["以思库法务助手已绑定合同文档为审查边界", "找出合同原文与最接近模板的实质偏离", "输出有原文锚点且可直接修订的建议", "对知识库未覆盖事项保持克制"],
+    "report_sections": ["modification_suggestions", "template_differences", "breach_cost_analysis", "citations"],
+    "prompt_rules": ["先检索《思库合同模板清单目录-2026更新版-业务类》及实际范本", "只报告合同原文和知识库都能支持的实质问题", "每个问题只保留一份合并后修改建议", "不得根据模型记忆或通用最佳实践扩张风险"]
+  }
+]

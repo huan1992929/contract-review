@@ -20,6 +20,7 @@
 
 const { parseContractTree } = require('./contractParser');
 const { createChatCompletion } = require('./llmClient');
+const { getRelevantKnowledge } = require('./contractAnalysis/knowledge');
 const db = require('../database');
 
 /**
@@ -148,7 +149,7 @@ const cleanJsonResponse = (text) => {
 };
 
 // 构造单条款增量审查 prompt（复用整篇审查风格，但只审查单个变更条款）
-const buildClauseReviewPrompt = (diff, template) => {
+const buildClauseReviewPrompt = (diff, template, knowledge = []) => {
     const tmpl = template || {};
     const reviewPoints = (tmpl.review_points || []).join('；');
     const corePurposes = (tmpl.core_purposes || []).join('；');
@@ -158,6 +159,9 @@ const buildClauseReviewPrompt = (diff, template) => {
     const oldPart = changeType === 'modified'
         ? `变更前条款原文：\n---\n${diff.old_text}\n---\n`
         : '';
+    const knowledgeContext = knowledge.map((item, index) => (
+        `[${index + 1}] [${item.source_type}] ${item.law} ${item.clause || ''}：${item.content}`
+    )).join('\n') || '未检索到直接依据。';
 
     return `你是一名资深法务专家，正在对合同进行条款级增量审查。当前只需审查以下发生变更的单个条款，识别本次变更引入或仍存在的法律风险，并只输出 JSON。
 
@@ -173,16 +177,47 @@ ${oldPart}当前条款原文：
 ${diff.new_text}
 ---
 
-输出 JSON 结构（仅输出与该条款相关的风险项，无则空数组）：
+思库法务助手知识库依据（只能引用以下内容）：
+${knowledgeContext}
+
+输出 JSON 结构（仅输出与该条款相关且有知识库直接依据的待优化项，无则空数组）：
 {
-  "dispute_points": [{"title":"风险标题","original_clause":"合同原文中存在风险的完整句子或段落","legal_reference":"法律依据","risk_level":"高/中/低","suggestion":"修改建议"}]
+  "dispute_points": [{"title":"待优化项标题","original_clause":"合同原文中的完整句子或段落","basis":[{"source_type":"weknora/law/case/template/review_rule","title":"知识库依据标题","content":"依据原文"}],"legal_reference":"知识库依据标题","suggestion":"修改建议"}]
 }
 
 硬性要求：
 - original_clause 必须逐字摘录当前条款原文中的完整句子或段落，不得改写，用于后续定位与比对。
-- 如果没有明确法律依据，不得编造法条或案例，legal_reference 填写"无明确依据"。
+- 每一项 basis 必须逐字引用本次提供的知识库依据标题和原文；未检索到直接依据时 dispute_points 必须为空。
+- 如果修改后的条款已经落实建议，不得再次报告原问题；不得把一般最佳实践、措辞偏好或模型记忆当作新风险。
+- 同一实质问题只保留一项，当前条款最多输出 3 项。
 - 仅审查给定条款，不要涉及合同其他条款。
+- 不输出高、中、低风险等级或任何同义分级。
 - 不输出自然语言解释，不输出 markdown，只输出 JSON。`;
+};
+
+const compactForMatch = (value) => String(value || '').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
+
+const filterGroundedIncrementalPoints = (points, clauseText, knowledge) => {
+    const text = compactForMatch(clauseText);
+    const seen = new Set();
+    return (Array.isArray(points) ? points : []).filter((point) => {
+        const anchor = compactForMatch(point.original_clause);
+        if (anchor.length < 6 || !text.includes(anchor)) return false;
+        const basis = compactForMatch(JSON.stringify(point.basis || point.legal_reference || ''));
+        const grounded = (knowledge || []).some((item) => {
+            const title = compactForMatch(item.law || item.source_name);
+            const content = compactForMatch(item.content);
+            return (title.length >= 4 && basis.includes(title))
+                || (content.length >= 12 && basis.includes(content.slice(0, 24)));
+        });
+        if (!grounded) return false;
+        const suggestion = compactForMatch(point.suggestion);
+        if (suggestion.length >= 8 && text.includes(suggestion)) return false;
+        const key = compactForMatch((point.title || '') + '|' + (point.original_clause || ''));
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    }).slice(0, 3);
 };
 
 /**
@@ -208,14 +243,23 @@ const runIncrementalReview = async (contractId, diffClauses, originalDisputePoin
     const CONCURRENCY = 3;
 
     const reviewOne = async (diff) => {
-        const prompt = buildClauseReviewPrompt(diff, template);
         try {
+            const knowledge = await getRelevantKnowledge({
+                byClause: true,
+                clauses: [{
+                    clause_id: diff.clause_id,
+                    title: diff.clause_id,
+                    text: diff.new_text,
+                }],
+            }, 8);
+            if (!knowledge.length) return [];
+            const prompt = buildClauseReviewPrompt(diff, template, knowledge);
             const completion = await createChatCompletion({
                 messages: [{ role: 'user', content: prompt }],
                 response_format: { type: 'json_object' },
             });
             const parsed = cleanJsonResponse(completion.choices[0].message.content);
-            const points = Array.isArray(parsed.dispute_points) ? parsed.dispute_points : [];
+            const points = filterGroundedIncrementalPoints(parsed.dispute_points, diff.new_text, knowledge);
             for (const point of points) {
                 point.clause_id = diff.clause_id;
             }
@@ -264,4 +308,6 @@ module.exports = {
     diffClauses,
     runIncrementalReview,
     textSimilarity,
+    buildClauseReviewPrompt,
+    filterGroundedIncrementalPoints,
 };

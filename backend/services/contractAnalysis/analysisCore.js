@@ -135,6 +135,105 @@ const buildStandardComparison = async (plainText, contractType) => {
     return comparisons;
 };
 
+const compactForMatch = (value) => String(value || '')
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}]+/gu, '');
+
+const hasTextAnchor = (item, plainText) => {
+    const documentText = compactForMatch(plainText);
+    if (!documentText) return false;
+    const anchor = item.current_clause || item.original_clause || item.original_text || item.contract_clause || '';
+    const compactAnchor = compactForMatch(anchor);
+    return compactAnchor.length >= 6 && documentText.includes(compactAnchor);
+};
+
+const knowledgeLabels = (item) => [
+    item?.law,
+    item?.source_name,
+    item?.metadata?.document_name,
+    item?.metadata?.title,
+].filter(Boolean).map(compactForMatch);
+
+const hasKnowledgeEvidence = (item, knowledge) => {
+    if (!Array.isArray(knowledge) || knowledge.length === 0) return false;
+    const basisText = compactForMatch(
+        typeof item?.basis === 'string'
+            ? item.basis
+            : JSON.stringify(item?.basis || item?.template_source || ''),
+    );
+    if (!basisText) return false;
+    return knowledge.some((entry) => {
+        if (knowledgeLabels(entry).some((label) => label.length >= 4 && basisText.includes(label))) return true;
+        const content = compactForMatch(entry?.content);
+        return content.length >= 12 && basisText.includes(content.slice(0, 24));
+    });
+};
+
+const dedupeBy = (items, keyOf, limit) => {
+    const seen = new Set();
+    const output = [];
+    for (const item of items) {
+        const key = compactForMatch(keyOf(item));
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        output.push(item);
+        if (output.length >= limit) break;
+    }
+    return output;
+};
+
+// 思库法务助手知识库是风险结论的边界：风险项同时需要合同原文锚点和本次检索依据。
+// 纯文本/计算错误仍可由合同本身确定，但必须有原文锚点；分条审查不得推导全局缺失条款。
+const enforceKnowledgeGrounding = (result, plainText, knowledge, {
+    allowMissingClauses = true,
+    maxSuggestions = 24,
+} = {}) => {
+    const source = result && typeof result === 'object' ? result : {};
+    const groundedFindings = (Array.isArray(source.compliance_findings) ? source.compliance_findings : [])
+        .filter((item) => hasTextAnchor(item, plainText) && hasKnowledgeEvidence(item, knowledge));
+    const groundedSuggestions = (Array.isArray(source.modification_suggestions) ? source.modification_suggestions : [])
+        .filter((item) => {
+            const isAppend = item.operation === 'append' && String(item.current_clause || '').trim() === '合同未约定';
+            const anchored = isAppend ? allowMissingClauses : hasTextAnchor(item, plainText);
+            const suggestionAlreadyPresent = compactForMatch(item.suggested_text).length >= 8
+                && compactForMatch(plainText).includes(compactForMatch(item.suggested_text));
+            return anchored && !suggestionAlreadyPresent && hasKnowledgeEvidence(item, knowledge);
+        });
+    const groundedMissing = allowMissingClauses
+        ? (Array.isArray(source.missing_clauses) ? source.missing_clauses : [])
+            .filter((item) => hasKnowledgeEvidence(item, knowledge))
+        : [];
+    const groundedDifferences = (Array.isArray(source.template_differences) ? source.template_differences : [])
+        .filter((item) => hasTextAnchor(item, plainText) && hasKnowledgeEvidence(item, knowledge));
+
+    return {
+        ...source,
+        compliance_findings: dedupeBy(
+            groundedFindings,
+            (item) => `${item.issue_type || ''}|${item.title || ''}|${item.original_clause || ''}`,
+            maxSuggestions,
+        ),
+        modification_suggestions: dedupeBy(
+            groundedSuggestions,
+            (item) => `${item.issue_type || ''}|${item.title || ''}|${item.current_clause || item.original_text || ''}`,
+            maxSuggestions,
+        ),
+        missing_clauses: dedupeBy(
+            groundedMissing,
+            (item) => `${item.title || ''}|${item.suggested_clause || ''}`,
+            Math.min(6, maxSuggestions),
+        ),
+        template_differences: dedupeBy(
+            groundedDifferences,
+            (item) => `${item.template_source || ''}|${item.contract_clause || ''}|${item.deviation || ''}`,
+            maxSuggestions,
+        ),
+        text_errors: (Array.isArray(source.text_errors) ? source.text_errors : [])
+            .filter((item) => hasTextAnchor(item, plainText)),
+        calculation_errors: Array.isArray(source.calculation_errors) ? source.calculation_errors : [],
+    };
+};
+
 const normalizeAnalysisResult = (result, plainText = '') => {
     const complianceFindings = Array.isArray(result.compliance_findings)
         ? result.compliance_findings
@@ -192,7 +291,7 @@ const aggregateClauseResults = (clauseResults) => {
     };
     const dpSeen = new Set();        // dispute_points 去重：title+original_clause
     const mcSeen = new Set();        // missing_clauses 去重：title
-    const msOriginalSeen = new Map(); // modification_suggestions original_text → clause_id（跨条款重复标注）
+    const msSeen = new Set(); // modification_suggestions 语义键去重
     for (const res of clauseResults) {
         const clauseId = res.clause_id || '';
         aggregate.core_information.cost_business.push(...(res.core_information?.cost_business || []).map((item) => ({ ...item, clause_id: clauseId })));
@@ -214,17 +313,10 @@ const aggregateClauseResults = (clauseResults) => {
         }
         for (const pr of (res.party_review || [])) aggregate.party_review.push(pr);
         for (const ms of (res.modification_suggestions || [])) {
-            const key = String(ms.original_text || '').trim();
+            const key = compactForMatch(`${ms.issue_type || ''}|${ms.title || ''}|${ms.original_text || ms.current_clause || ''}`);
             const item = { ...ms, clause_id: clauseId };
-            if (key) {
-                if (msOriginalSeen.has(key)) {
-                    // 跨条款重复：标注，不删除（供前端提示人工复核一致性）
-                    item.cross_clause_duplicate = true;
-                    item.cross_clause_with = msOriginalSeen.get(key);
-                } else {
-                    msOriginalSeen.set(key, clauseId);
-                }
-            }
+            if (!key || msSeen.has(key)) continue;
+            msSeen.add(key);
             aggregate.modification_suggestions.push(item);
         }
         for (const bc of (res.breach_cost_analysis || [])) aggregate.breach_cost_analysis.push(bc);
@@ -266,6 +358,10 @@ const aggregateClauseResults = (clauseResults) => {
             }];
         }
     }
+    aggregate.modification_suggestions = aggregate.modification_suggestions.slice(0, 24);
+    aggregate.compliance_findings = aggregate.compliance_findings.slice(0, 24);
+    aggregate.dispute_points = aggregate.dispute_points.slice(0, 24);
+    aggregate.missing_clauses = aggregate.missing_clauses.slice(0, 6);
     return aggregate;
 };
 
@@ -275,5 +371,6 @@ module.exports = {
     classifyClauseCategory,
     buildStandardComparison,
     normalizeAnalysisResult,
+    enforceKnowledgeGrounding,
     aggregateClauseResults,
 };
