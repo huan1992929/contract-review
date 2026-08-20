@@ -1,9 +1,15 @@
 FROM node:20-bookworm-slim
 
+ARG DEBIAN_MIRROR_HOST=http://deb.debian.org
+
 ENV NODE_ENV=production \
     PORT=3000
 
-RUN apt-get update \
+RUN if [ "$DEBIAN_MIRROR_HOST" != "http://deb.debian.org" ]; then \
+        sed -i "s#http://deb.debian.org#$DEBIAN_MIRROR_HOST#g" \
+          /etc/apt/sources.list.d/debian.sources; \
+    fi \
+    && apt-get update \
     && apt-get install -y --no-install-recommends fonts-noto-cjk ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

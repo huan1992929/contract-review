@@ -20,6 +20,8 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile.backend
+      args:
+        DEBIAN_MIRROR_HOST: ${DEBIAN_MIRROR_HOST:-http://deb.debian.org}
     restart: unless-stopped
     env_file:
       - ${CONTRACT_REVIEW_ENV_FILE:-./deploy/thinkpark.env}
