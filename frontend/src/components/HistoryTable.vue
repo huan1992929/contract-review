@@ -97,12 +97,12 @@ export default {
 }
 
 .record-table th:nth-child(1) { width: 20%; }
-.record-table th:nth-child(2) { width: 25%; }
-.record-table th:nth-child(3) { width: 19%; }
+.record-table th:nth-child(2) { width: 23%; }
+.record-table th:nth-child(3) { width: 18%; }
 .record-table th:nth-child(4) { width: 7%; }
 .record-table th:nth-child(5) { width: 10%; }
 .record-table th:nth-child(6) { width: 8%; }
-.record-table th:nth-child(7) { width: 11%; }
+.record-table th:nth-child(7) { width: 14%; }
 
 .file-cell {
   overflow: hidden;
@@ -180,6 +180,7 @@ export default {
 
 .text-button,
 .pager button {
+  flex-shrink: 0;
   background: #ffffff;
   color: #111111;
   padding: 6px 8px;
@@ -187,6 +188,7 @@ export default {
   border: 0;
   border-radius: 8px;
   font-weight: 800;
+  white-space: nowrap;
   cursor: pointer;
 }
 
