@@ -21,6 +21,20 @@ const fs = require('fs');
 const mammoth = require('mammoth');
 const pdf = require('pdf-parse');
 
+const OCR_SIDECAR_SUFFIX = '.ocr.txt';
+const MIN_OCR_SIDECAR_CHARS = 50;
+
+const getOcrSidecarPath = (filePath) => `${filePath}${OCR_SIDECAR_SUFFIX}`;
+
+const readOcrSidecar = (filePath) => {
+    const sidecarPath = getOcrSidecarPath(filePath);
+    if (!fs.existsSync(sidecarPath)) return null;
+    const text = fs.readFileSync(sidecarPath, 'utf8').trim();
+    const effectiveChars = text.replace(/\s+/g, '').length;
+    if (effectiveChars < MIN_OCR_SIDECAR_CHARS) return null;
+    return text;
+};
+
 // 检测 PDF 是否为扫描件（图像型）：文本极少且页数大于0
 const detectScannedPdf = (pdfData) => {
     const text = String(pdfData.text || '').replace(/\s+/g, '');
@@ -50,6 +64,8 @@ const extractTextFromFile = async (filePath) => {
         const data = await pdf(fs.readFileSync(filePath));
         const scanInfo = detectScannedPdf(data);
         if (scanInfo.isScanned || !data.text || !data.text.trim()) {
+            const ocrText = readOcrSidecar(filePath);
+            if (ocrText) return ocrText;
             const err = new Error('该 PDF 疑似扫描件（图像型），无法提取文本内容。请上传可复制的文字版 PDF，或先用 OCR 工具转换为文字版后再上传。');
             err.code = 'SCANNED_PDF';
             err.scanInfo = scanInfo;
@@ -73,6 +89,8 @@ const wrapContractContent = (text) => [
 
 module.exports = {
     detectScannedPdf,
+    getOcrSidecarPath,
+    readOcrSidecar,
     extractTextFromFile,
     CONTRACT_CONTENT_BEGIN,
     CONTRACT_CONTENT_END,
