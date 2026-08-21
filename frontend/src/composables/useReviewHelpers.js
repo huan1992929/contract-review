@@ -233,11 +233,22 @@ export function useReviewHelpers(state) {
             }
             const newRisks = Array.isArray(result.new_risks) ? result.new_risks : [];
             const resolvedRisks = Array.isArray(result.resolved_risks) ? result.resolved_risks : [];
-            reviewData.dispute_points = reviewData.dispute_points.map((dp) => (
-                resolvedRisks.includes(dp.title) ? { ...dp, resolved: true } : dp
-            ));
-            const enrichedNewRisks = newRisks.map((r) => ({ ...r, isNewIncremental: true }));
-            reviewData.dispute_points = [...enrichedNewRisks, ...reviewData.dispute_points];
+            if (Array.isArray(result.dispute_points)) {
+                // Server ledger is authoritative: it carries stable identities and human decisions.
+                reviewData.dispute_points = result.dispute_points;
+            } else {
+                // Compatibility with older servers, without blindly prepending duplicate findings.
+                const merged = new Map();
+                reviewData.dispute_points.forEach((dp) => {
+                    const key = dp.risk_fingerprint || dp.issue_id || `${dp.clause_id || ''}|${dp.title || dp.type || ''}`;
+                    merged.set(key, resolvedRisks.includes(dp.title) ? { ...dp, resolved: true } : dp);
+                });
+                newRisks.forEach((risk) => {
+                    const key = risk.risk_fingerprint || risk.issue_id || `${risk.clause_id || ''}|${risk.title || risk.type || ''}`;
+                    if (!merged.has(key)) merged.set(key, { ...risk, isNewIncremental: true });
+                });
+                reviewData.dispute_points = Array.from(merged.values());
+            }
             const reviewRecord = {
                 reviewed_at: result.reviewed_at,
                 diff_summary: {

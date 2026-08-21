@@ -6,7 +6,7 @@
       <p class="text-sm text-text-light text-center mb-4">可能是网络连接问题导致无法加载合同详情。您的审查进度已保留，可点击下方按钮重试，或返回首页。</p>
       <div class="flex gap-3">
         <button @click="retryLoadSession" class="px-4 py-2 text-sm font-medium text-white bg-primary rounded hover:bg-primary-dark">重试恢复</button>
-        <button @click="abandon" class="px-4 py-2 text-sm font-medium text-text-main bg-white border border-border-color rounded hover:bg-bg-subtle">放弃并重置</button>
+        <button @click="returnHome" class="px-4 py-2 text-sm font-medium text-text-main bg-white border border-border-color rounded hover:bg-bg-subtle">返回首页（保留进度）</button>
       </div>
     </div>
   </div>
@@ -19,12 +19,9 @@ export default {
   name: 'SessionRetryMask',
   setup() {
     const review = inject('review');
-    const { sessionLoadFailed, retryLoadSession, resetState } = review;
-    const abandon = () => {
-      sessionLoadFailed.value = false;
-      resetState();
-    };
-    return { sessionLoadFailed, retryLoadSession, abandon };
+    const { sessionLoadFailed, retryLoadSession } = review;
+    const returnHome = () => window.location.assign('/contract-review/');
+    return { sessionLoadFailed, retryLoadSession, returnHome };
   },
 };
 </script>

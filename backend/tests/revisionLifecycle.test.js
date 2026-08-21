@@ -15,6 +15,7 @@ const {
     syncRevisionGroupsFromDocx,
     resolveParagraphMatch,
     replaceTextInDocx,
+    replaceTextsInDocxAtomic,
 } = require('../services/contractAnalysis/docxEdit');
 
 const baseParagraph = '<w:p><w:pPr><w:spacing w:line="360"/></w:pPr><w:r><w:rPr><w:sz w:val="26"/></w:rPr><w:t>4.6 甲方审核期限不作固定限制。</w:t></w:r></w:p>';
@@ -72,6 +73,102 @@ test('attachment anchor replaces only its paragraph and removes the human instru
         assert.equal((xml.match(/<w:ins\b/g) || []).length, 1);
         assert.equal(xml.includes('附件三第四条修改为'), false);
         assert.equal(paragraphText(xml).includes('7.4 乙方接到维修通知后应在 4 小时内响应、24 小时内到场。'), true);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test('short contract-title anchor cannot write a full preamble into the title paragraph', () => {
+    const title = '一方 AI 企业服务协议';
+    const documentXml = makeDocumentXml([
+        `<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t>${title}</w:t></w:r></w:p>`,
+        '<w:p><w:r><w:t>甲方（服务接受方）：思库文化传播集团有限公司</w:t></w:r></w:p>',
+    ].join(''));
+    const compositeOriginal = `${title} 甲方：思库文化传播集团有限公司 乙方：北京壹碗科技有限公司`;
+    const fullPreamble = `${title} 本协议由以下各方于【】年【】月【】日在杭州市拱墅区签署：甲方（服务接受方）：思库文化传播集团有限公司；乙方（服务提供方）：北京壹碗科技有限公司。甲乙双方本着平等、自愿、诚实信用原则达成如下协议。`;
+
+    assert.throws(
+        () => resolveParagraphMatch(documentXml, compositeOriginal, fullPreamble, [title]),
+        /DOCX_REPLACEMENT_SCOPE_MISMATCH/,
+    );
+});
+
+test('multi-paragraph replacement fails closed instead of flattening lines into one paragraph', () => {
+    const documentXml = makeDocumentXml('<w:p><w:r><w:t>1.1 原条款。</w:t></w:r></w:p>');
+    assert.throws(
+        () => resolveParagraphMatch(documentXml, '1.1 原条款。', '1.1 新条款。\n1.2 新增条款。'),
+        /DOCX_MULTI_PARAGRAPH_REPLACEMENT_UNSUPPORTED/,
+    );
+});
+
+test('duplicate paragraph text remains ambiguous and cannot be auto-replaced', () => {
+    const duplicate = '<w:p><w:r><w:t>2.1 乙方应提供发票。</w:t></w:r></w:p>';
+    const documentXml = makeDocumentXml(`${duplicate}${duplicate}`);
+    assert.throws(
+        () => resolveParagraphMatch(documentXml, '2.1 乙方应提供发票。', '2.1 乙方应提供合法有效发票。'),
+        /DOCX_TEXT_MATCH_AMBIGUOUS/,
+    );
+});
+
+test('batch replacement is all-or-nothing when one item cannot be applied', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atomic-batch-'));
+    const filePath = path.join(tempDir, 'contract.docx');
+    try {
+        writeMinimalDocx(filePath, makeDocumentXml([
+            '<w:p><w:r><w:t>1.1 甲方应在30日内付款。</w:t></w:r></w:p>',
+            '<w:p><w:r><w:t>2.1 乙方应提供发票。</w:t></w:r></w:p>',
+        ].join('')));
+        const before = fs.readFileSync(filePath);
+        assert.throws(() => replaceTextsInDocxAtomic(filePath, [
+            {
+                originalText: '1.1 甲方应在30日内付款。',
+                suggestedText: '1.1 甲方应在15日内付款。',
+                options: { mode: 'review', revisionGroupId: 'batch-1' },
+            },
+            {
+                originalText: '9.9 文档中不存在的条款。',
+                suggestedText: '9.9 修改后条款。',
+                options: { mode: 'review', revisionGroupId: 'batch-2' },
+            },
+        ]), (error) => {
+            assert.equal(error.message, 'DOCX_BATCH_ABORTED');
+            assert.equal(error.results[0].ok, true);
+            assert.equal(error.results[1].ok, false);
+            return true;
+        });
+        assert.deepEqual(fs.readFileSync(filePath), before);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test('successful batch writes all revision groups in one readable DOCX', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'successful-batch-'));
+    const filePath = path.join(tempDir, 'contract.docx');
+    try {
+        writeMinimalDocx(filePath, makeDocumentXml([
+            '<w:p><w:r><w:t>1.1 甲方应在30日内付款。</w:t></w:r></w:p>',
+            '<w:p><w:r><w:t>2.1 乙方应提供发票。</w:t></w:r></w:p>',
+        ].join('')));
+        const result = replaceTextsInDocxAtomic(filePath, [
+            {
+                originalText: '1.1 甲方应在30日内付款。',
+                suggestedText: '1.1 甲方应在15日内付款。',
+                options: { mode: 'review', revisionGroupId: 'success-1' },
+            },
+            {
+                originalText: '2.1 乙方应提供发票。',
+                suggestedText: '2.1 乙方应提供合法有效发票。',
+                options: { mode: 'review', revisionGroupId: 'success-2' },
+            },
+        ]);
+        const reopened = new AdmZip(filePath);
+        const xml = reopened.getEntry('word/document.xml').getData().toString('utf8');
+        assert.equal(result.replacements, 2);
+        assert.equal((xml.match(/<w:del\b/g) || []).length, 2);
+        assert.equal((xml.match(/<w:ins\b/g) || []).length, 2);
+        assert.equal(paragraphText(xml).includes('1.1 甲方应在15日内付款。'), true);
+        assert.equal(paragraphText(xml).includes('2.1 乙方应提供合法有效发票。'), true);
     } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
     }

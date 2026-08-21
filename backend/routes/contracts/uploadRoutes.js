@@ -140,12 +140,29 @@ module.exports = function (router) {
                 if (contract && body.url) {
                     const downloadUrl = normalizeOnlyOfficeDownloadUrl(body.url);
                     const response = await axios.get(downloadUrl, { responseType: 'stream', timeout: 30000 });
-                    const writer = fs.createWriteStream(contract.storage_path);
+                    const callbackTempPath = `${contract.storage_path}.onlyoffice-${uuidv4()}.tmp`;
+                    const writer = fs.createWriteStream(callbackTempPath);
                     response.data.pipe(writer);
-                    await new Promise((resolve, reject) => {
-                        writer.on('finish', resolve);
-                        writer.on('error', reject);
-                    });
+                    try {
+                        await new Promise((resolve, reject) => {
+                            writer.on('finish', resolve);
+                            writer.on('error', reject);
+                        });
+                        // The AI mutation path rotates document_key. A delayed
+                        // callback from the retired editor must never overwrite
+                        // the newly generated immutable working version.
+                        const stillCurrent = await db('contracts')
+                            .where({ id: contract.id, document_key: body.key })
+                            .first();
+                        if (!stillCurrent) {
+                            fs.unlinkSync(callbackTempPath);
+                            console.warn(`[OnlyOffice] ignored stale callback for contract ${contract.id}, key ${body.key}`);
+                            return res.status(200).json({ error: 0 });
+                        }
+                        fs.renameSync(callbackTempPath, contract.storage_path);
+                    } finally {
+                        if (fs.existsSync(callbackTempPath)) fs.unlinkSync(callbackTempPath);
+                    }
                     let revisionSync = { changed: false, results: [], analysis: null };
                     try {
                         const analysis = typeof contract.analysis_result === 'string'
@@ -164,7 +181,11 @@ module.exports = function (router) {
                             if (group) group.document_key = nextDocumentKey;
                         }
                     }
-                    const contractUpdate = { updated_at: db.fn.now() };
+                    const contractUpdate = {
+                        updated_at: db.fn.now(),
+                        onlyoffice_saved_at: db.fn.now(),
+                        onlyoffice_saved_key: body.key,
+                    };
                     const owner = await db('users').where({ id: contract.user_id }).select('fingerprint_id').first();
                     const mirrored = await mirrorContractFile(contract.storage_path, {
                         owner: owner?.fingerprint_id || `user-${contract.user_id}`,

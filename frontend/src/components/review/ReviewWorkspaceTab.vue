@@ -1,5 +1,39 @@
 <template>
   <div class="space-y-6">
+    <section class="version-ledger" aria-labelledby="version-ledger-title">
+      <div class="version-ledger__head">
+        <div>
+          <p class="version-ledger__kicker">DOCUMENT HISTORY</p>
+          <h4 id="version-ledger-title">合同版本与保存状态</h4>
+        </div>
+        <button type="button" :disabled="versionsLoading" @click="loadVersions">
+          {{ versionsLoading ? '正在同步…' : '刷新版本' }}
+        </button>
+      </div>
+      <div v-if="versionsError" class="version-alert is-error">
+        <strong>版本记录加载失败</strong>
+        <span>{{ versionsError }}</span>
+      </div>
+      <div v-else-if="versions.length" class="version-list">
+        <article v-for="(version, index) in versions" :key="version.id || version.version_no" :class="['version-item', index === 0 ? 'is-current' : '']">
+          <span class="version-node"></span>
+          <div class="version-item__copy">
+            <strong>版本 {{ version.version_no || version.version || versions.length - index }}</strong>
+            <span>{{ versionActionLabel(version.source_action) }}</span>
+          </div>
+          <time>{{ formatVersionTime(version.created_at) }}</time>
+          <span v-if="index === 0" class="version-current">当前</span>
+        </article>
+      </div>
+      <div v-else-if="!versionsLoading" class="version-empty">
+        当前尚无修订快照。首次写入修订后，系统会在这里保留可追溯版本。
+      </div>
+      <div v-if="editorModeSyncError" class="version-alert is-warning">
+        <strong>编辑器状态同步失败</strong>
+        <span>{{ editorModeSyncError }}。请刷新版本并重新打开文档，避免在旧版本上继续修改。</span>
+      </div>
+    </section>
+
     <!-- Focused Review -->
     <div class="space-y-4">
       <div class="p-4 bg-white rounded-md border border-border-color">
@@ -177,8 +211,9 @@
 </template>
 
 <script>
-import { inject } from 'vue';
+import { inject, onMounted, ref, watch } from 'vue';
 import { ElInput, ElSelect, ElOption, ElCheckboxGroup, ElCheckbox, ElAutocomplete } from 'element-plus';
+import api from '../../api';
 
 export default {
   name: 'ReviewWorkspaceTab',
@@ -197,8 +232,40 @@ export default {
       startReAnalysis, reAnalyzing,
       analysisActive, loadingMessage, analysisPercent, analysisElapsed, analysisEta,
       formatDuration, analysisSteps, progressStatusClass, progressStatusLabel,
+      contract, editorModeSyncError,
     } = review;
+    const versions = ref([]);
+    const versionsLoading = ref(false);
+    const versionsError = ref('');
+    const loadVersions = async () => {
+      if (!contract.id || versionsLoading.value) return;
+      versionsLoading.value = true;
+      versionsError.value = '';
+      try {
+        const response = await api.getContractVersions(contract.id);
+        versions.value = Array.isArray(response.data?.versions) ? response.data.versions : [];
+      } catch (error) {
+        versionsError.value = error.response?.data?.error || '无法连接版本服务，请稍后重试。';
+      } finally {
+        versionsLoading.value = false;
+      }
+    };
+    const versionActionLabel = (action) => ({
+      upload: '原始上传',
+      'replace-text': '单条修订前快照',
+      'batch-replace-text': '批量修订前快照',
+      'review-batch-replace-text': '审阅修订前快照',
+      'append-clause': '新增条款前快照',
+      incremental_review: '增量复审快照',
+    }[action] || action || '合同快照');
+    const formatVersionTime = (value) => value
+      ? new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+      : '时间待同步';
+    watch(() => contract.id, loadVersions);
+    onMounted(loadVersions);
     return {
+      versions, versionsLoading, versionsError, loadVersions, versionActionLabel, formatVersionTime,
+      editorModeSyncError,
       diffItems, diffLoading, loadLatestDiff,
       prepareFocusedReviewFromSelection,
       focusedReviewText, focusedReviewQuestion, focusedReviewResult, focusedReviewLoading,
@@ -216,6 +283,32 @@ export default {
 </script>
 
 <style scoped>
+.version-ledger {
+  padding: 16px;
+  border: 1px solid var(--tp-line);
+  border-radius: 14px;
+  background: linear-gradient(135deg, #fff 0%, var(--tp-bg-muted) 145%);
+}
+
+.version-ledger__head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.version-ledger__head h4 { margin: 3px 0 0; color: var(--tp-text-primary); font-size: 14px; }
+.version-ledger__kicker { margin: 0; color: var(--tp-accent); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 9px; font-weight: 800; letter-spacing: .14em; }
+.version-ledger__head button { padding: 6px 10px; border: 1px solid var(--tp-line); border-radius: 9px; background: #fff; color: var(--tp-text-muted); font-size: 11px; font-weight: 700; }
+.version-list { position: relative; display: grid; margin-top: 14px; }
+.version-list::before { content: ''; position: absolute; top: 15px; bottom: 15px; left: 5px; width: 1px; background: var(--tp-line-strong); }
+.version-item { position: relative; display: grid; grid-template-columns: 14px minmax(0, 1fr) auto auto; align-items: center; gap: 9px; min-height: 38px; color: var(--tp-text-muted); font-size: 11px; }
+.version-node { position: relative; z-index: 1; width: 11px; height: 11px; border: 2px solid #fff; border-radius: 50%; background: var(--tp-line-strong); box-shadow: 0 0 0 1px var(--tp-line-strong); }
+.version-item.is-current .version-node { background: var(--tp-accent); box-shadow: 0 0 0 1px var(--tp-accent), 0 0 0 5px var(--tp-accent-subtle); }
+.version-item__copy { display: flex; min-width: 0; gap: 8px; align-items: baseline; }
+.version-item__copy strong { color: var(--tp-text-primary); font-size: 12px; }
+.version-item__copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.version-current { padding: 2px 6px; border-radius: 999px; background: var(--tp-accent-subtle); color: var(--tp-accent-active); font-size: 9px; font-weight: 800; }
+.version-empty { margin-top: 13px; padding: 12px; border-radius: 10px; background: var(--tp-bg-muted); color: var(--tp-text-subtle); font-size: 11px; line-height: 1.6; }
+.version-alert { display: grid; gap: 3px; margin-top: 12px; padding: 10px 12px; border-radius: 10px; font-size: 11px; line-height: 1.55; }
+.version-alert.is-error { background: #fde8e8; color: #a82b2b; }
+.version-alert.is-warning { background: var(--tp-warning-bg); color: #8a5b00; }
+.version-alert strong { font-size: 12px; }
+
 .reanalysis-progress .analysis-progress {
   max-height: 280px;
   overflow-y: auto;

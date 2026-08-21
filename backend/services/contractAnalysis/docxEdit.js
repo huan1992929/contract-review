@@ -419,6 +419,8 @@ const appendClauseInDocx = (filePath, title, content, options = {}) => {
 };
 
 const replaceTextInXmlRuns = (xml, candidate, suggestedText) => {
+    const replacementLines = String(suggestedText ?? '').split(/\r?\n/).filter((line) => line.trim());
+    if (replacementLines.length > 1) throw new Error('DOCX_MULTI_PARAGRAPH_REPLACEMENT_UNSUPPORTED');
     const textRunPattern = /<w:t\b([^>]*)>([\s\S]*?)<\/w:t>/g;
     const runs = [];
     let match;
@@ -441,7 +443,7 @@ const replaceTextInXmlRuns = (xml, candidate, suggestedText) => {
     if (!range) return { xml, replaced: false };
     const overlappingRuns = runs.filter((run) => run.end > range.start && run.start < range.end);
     const insertionRun = overlappingRuns.find((run) => !run.isHeading) || overlappingRuns[0];
-    const safeSuggestion = String(suggestedText || '').replace(/\r?\n+/g, ' ');
+    const safeSuggestion = replacementLines[0] ?? '';
     const parts = [];
     let cursor = 0;
     for (const run of runs) {
@@ -880,6 +882,48 @@ const coversWholeParagraphIgnoringTerminalPunctuation = (paragraphTextValue, nee
     return Boolean(paragraph && candidate && paragraph === candidate);
 };
 
+const replacementParagraphs = (text) => String(text ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+/**
+ * Fail closed when a text suggestion changes the structural scope of its
+ * anchor. A plain text replacement cannot safely turn one title/paragraph
+ * into a multi-paragraph preamble; doing so would put every line inside the
+ * matched paragraph and inherit its alignment/style.
+ */
+const assertReplacementScopeCompatible = (resolved, suggestedText) => {
+    const paragraphs = replacementParagraphs(stripReplacementInstructionPrefix(suggestedText));
+    if (paragraphs.length > 1) throw new Error('DOCX_MULTI_PARAGRAPH_REPLACEMENT_UNSUPPORTED');
+
+    const replacement = paragraphs[0] || '';
+    const paragraphLength = normalizeForDocxMatch(resolved?.paragraph?.text).value.length;
+    const matchedLength = normalizeForDocxMatch(resolved?.matchedText).value.length;
+    const replacementLength = normalizeForDocxMatch(replacement).value.length;
+    const wholeParagraph = resolved?.range?.start === 0
+        && resolved?.range?.end === String(resolved?.paragraph?.text || '').length;
+    const styledHeading = /<w:pStyle\b[^>]*w:val="(?:Heading\d*|Title|标题\d*)"/i
+        .test(String(resolved?.paragraph?.xml || ''));
+
+    // Short headings such as a contract title are only locators. They must not
+    // authorize insertion of a complete party block or contract preamble.
+    const shortParagraphExpandedIntoBlock = wholeParagraph
+        && paragraphLength <= 32
+        && replacementLength >= 48
+        && replacementLength > paragraphLength * 2;
+    const tinyPartialAnchorExpandedIntoBlock = !wholeParagraph
+        && matchedLength <= 16
+        && replacementLength >= 48
+        && replacementLength > matchedLength * 3;
+    const headingExpandedIntoBody = styledHeading
+        && replacementLength >= 48
+        && replacementLength > Math.max(paragraphLength * 2, 40);
+    if (shortParagraphExpandedIntoBlock || tinyPartialAnchorExpandedIntoBlock || headingExpandedIntoBody) {
+        throw new Error('DOCX_REPLACEMENT_SCOPE_MISMATCH');
+    }
+};
+
 // A short clause-numbered anchor (for example "7.3 本工程整体质量保修期…")
 // identifies the paragraph, not merely the prefix to overwrite. If the AI
 // suggestion is also a complete clause with the same number, retaining the
@@ -951,15 +995,13 @@ const resolveParagraphMatch = (documentXml, originalText, suggestedText, origina
     if (!matches.length) matches = findMatches(true);
     if (!matches.length) throw new Error('DOCX_EXACT_TEXT_NOT_FOUND');
     if (matches.length > 1) throw new Error('DOCX_TEXT_MATCH_AMBIGUOUS');
+    assertReplacementScopeCompatible(matches[0], suggestedText);
     return matches[0];
 };
 
-const replaceTextInDocx = (filePath, originalText, suggestedText, originalCandidates = [], options = {}) => {
-    const zip = new AdmZip(filePath);
-    const entry = zip.getEntry('word/document.xml');
-    if (!entry) throw new Error('DOCX_DOCUMENT_XML_NOT_FOUND');
+const replaceTextInDocumentXml = (sourceXml, originalText, suggestedText, originalCandidates = [], options = {}) => {
     const priorRevision = normalizeRejectedRevisionBeforeReapply(
-        entry.getData().toString('utf8'),
+        sourceXml,
         options.previousRevisionGroup,
         options.previousApplicationStatus,
     );
@@ -985,9 +1027,8 @@ const replaceTextInDocx = (filePath, originalText, suggestedText, originalCandid
         paragraphXml = result.xml;
     }
     const updatedXml = `${documentXml.slice(0, resolved.paragraph.start)}${paragraphXml}${documentXml.slice(resolved.paragraph.end)}`;
-    zip.updateFile('word/document.xml', Buffer.from(updatedXml, 'utf8'));
-    zip.writeZip(filePath);
     return {
+        xml: updatedXml,
         replacements: 1,
         clauseNo: resolved.clauseNo,
         matchedText: resolved.matchedText,
@@ -995,6 +1036,82 @@ const replaceTextInDocx = (filePath, originalText, suggestedText, originalCandid
         strategy: resolved.strategy,
         mode: options.mode === 'review' ? 'review' : 'edit',
         revisionGroup,
+    };
+};
+
+const writeZipAtomically = (zip, filePath, suffix = 'docx-edit') => {
+    const tempPath = `${filePath}.${suffix}-${randomUUID()}.tmp`;
+    try {
+        zip.writeZip(tempPath);
+        fs.renameSync(tempPath, filePath);
+    } finally {
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    }
+};
+
+const replaceTextInDocx = (filePath, originalText, suggestedText, originalCandidates = [], options = {}) => {
+    const zip = new AdmZip(filePath);
+    const entry = zip.getEntry('word/document.xml');
+    if (!entry) throw new Error('DOCX_DOCUMENT_XML_NOT_FOUND');
+    const result = replaceTextInDocumentXml(
+        entry.getData().toString('utf8'), originalText, suggestedText, originalCandidates, options,
+    );
+    zip.updateFile('word/document.xml', Buffer.from(result.xml, 'utf8'));
+    writeZipAtomically(zip, filePath);
+    const { xml, ...metadata } = result;
+    return metadata;
+};
+
+/**
+ * Apply a complete batch in memory and write the DOCX only when every item is
+ * safe. This prevents a batch with one ambiguous/unsupported suggestion from
+ * leaving a partially modified document behind.
+ */
+const replaceTextsInDocxAtomic = (filePath, replacements = []) => {
+    const zip = new AdmZip(filePath);
+    const entry = zip.getEntry('word/document.xml');
+    if (!entry) throw new Error('DOCX_DOCUMENT_XML_NOT_FOUND');
+    let documentXml = entry.getData().toString('utf8');
+    const results = [];
+
+    for (const [index, item] of replacements.entries()) {
+        const originalText = item?.originalText;
+        const suggestedText = item?.suggestedText;
+        const identity = {
+            suggestionIndex: item?.suggestionIndex,
+            title: String(item?.title || ''),
+        };
+        if (!String(originalText || '').trim() || suggestedText === undefined || suggestedText === null) {
+            results.push({ index, ...identity, ok: false, error: 'DOCX_REPLACEMENT_INPUT_INVALID' });
+            continue;
+        }
+        try {
+            const result = replaceTextInDocumentXml(
+                documentXml,
+                originalText,
+                suggestedText,
+                item.originalCandidates || [],
+                item.options || {},
+            );
+            documentXml = result.xml;
+            const { xml, ...metadata } = result;
+            results.push({ index, ...identity, ok: true, ...metadata });
+        } catch (error) {
+            results.push({ index, ...identity, ok: false, error: error.message });
+        }
+    }
+
+    if (results.some((item) => !item.ok)) {
+        const error = new Error('DOCX_BATCH_ABORTED');
+        error.results = results;
+        throw error;
+    }
+
+    zip.updateFile('word/document.xml', Buffer.from(documentXml, 'utf8'));
+    writeZipAtomically(zip, filePath, 'docx-batch');
+    return {
+        replacements: results.reduce((total, item) => total + Number(item.replacements || 0), 0),
+        results,
     };
 };
 
@@ -1018,8 +1135,11 @@ module.exports = {
     normalizeRejectedRevisionBeforeReapply,
     syncRevisionGroupsFromDocx,
     normalizeReplacementCandidates,
+    assertReplacementScopeCompatible,
     resolveParagraphMatch,
+    replaceTextInDocumentXml,
     replaceTextInDocx,
+    replaceTextsInDocxAtomic,
     parseChineseArticleNumber,
     toChineseArticleNumber,
     parseArticleHeading,

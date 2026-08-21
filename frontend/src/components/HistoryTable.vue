@@ -49,7 +49,15 @@
 
 <script>
 import { ElPopconfirm } from 'element-plus';
-import { formatDate, statusText } from '../composables/useHomeHistory';
+import { formatDate, statusText as baseStatusText } from '../composables/useHomeHistory';
+
+const statusText = (status) => ({
+  Analyzing: '审查中',
+  Processing: '处理中',
+  Queued: '排队中',
+  Failed: '处理失败',
+  Cancelled: '已取消',
+}[status] || baseStatusText(status));
 
 export default {
   name: 'HistoryTable',
@@ -142,6 +150,19 @@ export default {
 .status-pill.PreAnalyzed {
   background: #dbeafe;
   color: #1d4ed8;
+}
+
+.status-pill.Analyzing,
+.status-pill.Processing,
+.status-pill.Queued {
+  background: #fff3cf;
+  color: #8a5b00;
+}
+
+.status-pill.Failed,
+.status-pill.Cancelled {
+  background: #fde8e8;
+  color: #a82b2b;
 }
 
 .type-cell,

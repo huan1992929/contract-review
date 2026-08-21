@@ -253,8 +253,8 @@ export function useReviewActions(state, editor, helpers) {
             // stale browser session after the server has already produced a new
             // DOCX version can overwrite accepted revisions.
             if (pendingItems.length) {
-                await forceSaveCurrentDocument(true);
-                await new Promise((resolve) => setTimeout(resolve, 650));
+                const saveAck = await forceSaveCurrentDocument(true);
+                if (!saveAck?.saved) throw new Error('ONLYOFFICE_SAVE_NOT_CONFIRMED');
             }
 
             if (replacementItems.length) {
@@ -270,6 +270,7 @@ export function useReviewActions(state, editor, helpers) {
                     suggestions,
                     mode: reviewApplyMode.value,
                     expectedDocumentKey: latestDocumentKey,
+                    expectedSha256: contract.confirmedOssSha256 || undefined,
                 });
                 latestEditorConfig = response.data.editorConfig;
                 latestDocumentKey = response.data.editorConfig?.document?.key || latestDocumentKey;
@@ -303,6 +304,7 @@ export function useReviewActions(state, editor, helpers) {
                         targetClauseNo: item.target_clause_no || item.targetClauseNo || '',
                         targetHeading: item.target_heading || item.targetHeading || item.parent_clause || item.target_section || item.section_title || '',
                         expectedDocumentKey: latestDocumentKey,
+                        expectedSha256: contract.confirmedOssSha256 || undefined,
                     });
                     latestEditorConfig = response.data.editorConfig || latestEditorConfig;
                     latestDocumentKey = response.data.editorConfig?.document?.key || latestDocumentKey;

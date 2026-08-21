@@ -372,14 +372,17 @@ export function useReviewEditor(state, helpers) {
 
     const buildReplacementCandidates = (originalText, item = {}) => {
         const candidates = [
-            item.anchor_hint,
-            item.anchorHint,
             originalText,
             item.original_text,
             item.original_clause,
             item.current_clause,
             item.contract_clause,
             clauseBodyCandidate(originalText),
+            // Short AI anchors are locators of last resort. Sending them before
+            // the authoritative original text can match a contract title and
+            // incorrectly pour a whole preamble into that styled paragraph.
+            item.anchor_hint,
+            item.anchorHint,
         ];
         const seen = new Set();
         return candidates
@@ -471,6 +474,7 @@ export function useReviewEditor(state, helpers) {
             suggestionIndex: options.suggestionIndex,
             suggestionId: options.suggestionId || item.revision_group?.suggestion_id || item.suggestion_id || item.id || '',
             expectedDocumentKey: contract.editorConfig?.document?.key,
+            expectedSha256: contract.confirmedOssSha256 || undefined,
         });
         return response.data;
     };
@@ -606,8 +610,8 @@ export function useReviewEditor(state, helpers) {
     const replaceTextInEditorFinal = (originalText, suggestedText, onSuccess, onFailure, item = {}, options = {}) => runDocumentMutation(async () => {
         try {
             if (!await ensureReviewApplyMode()) return onFailure?.('编辑器修订模式未同步');
-            await forceSaveCurrentDocument(true);
-            await new Promise((resolve) => setTimeout(resolve, 650));
+            const saveAck = await forceSaveCurrentDocument(true);
+            if (!saveAck?.saved) throw new Error('ONLYOFFICE_SAVE_NOT_CONFIRMED');
             const result = await replaceTextOnServer(originalText, suggestedText, item, options);
             await reloadEditorConfig(result.editorConfig, undefined, {
                 text: result.replacementText || suggestedText,
@@ -627,8 +631,8 @@ export function useReviewEditor(state, helpers) {
     const appendClauseInEditorFinal = (title, content, onSuccess, onFailure, options = {}) => runDocumentMutation(async () => {
         try {
             if (!await ensureReviewApplyMode()) return onFailure?.('编辑器修订模式未同步');
-            await forceSaveCurrentDocument(true);
-            await new Promise((resolve) => setTimeout(resolve, 650));
+            const saveAck = await forceSaveCurrentDocument(true);
+            if (!saveAck?.saved) throw new Error('ONLYOFFICE_SAVE_NOT_CONFIRMED');
             const response = await api.appendContractClause(contract.id, {
                 title,
                 content,
@@ -640,6 +644,7 @@ export function useReviewEditor(state, helpers) {
                 targetClauseNo: options.targetClauseNo || '',
                 targetHeading: options.targetHeading || '',
                 expectedDocumentKey: contract.editorConfig?.document?.key,
+                expectedSha256: contract.confirmedOssSha256 || undefined,
             });
             await reloadEditorConfig(response.data?.editorConfig, undefined, {
                 text: response.data?.insertedText || content,
@@ -661,11 +666,13 @@ export function useReviewEditor(state, helpers) {
             if (typeof editor?.serviceCommand === 'function') {
                 editor.serviceCommand('forcesave', {});
             }
-            await api.forceSaveContract(contract.id, {
+            const response = await api.forceSaveContract(contract.id, {
                 documentKey: contract.editorConfig?.document?.key,
             });
+            if (!response.data?.saved) return false;
+            contract.confirmedOssSha256 = response.data.ossSha256 || '';
             hasPendingEditorChanges.value = false;
-            return true;
+            return response.data;
         } catch (error) {
             console.warn('[OnlyOffice] force-save failed', error.response?.data || error.message);
             if (!silent) ElMessage.warning(error.response?.data?.error || '触发文档保存同步失败');

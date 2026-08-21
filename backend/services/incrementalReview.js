@@ -21,7 +21,7 @@
 const { parseContractTree } = require('./contractParser');
 const { createChatCompletion } = require('./llmClient');
 const { getRelevantKnowledge } = require('./contractAnalysis/knowledge');
-const db = require('../database');
+const crypto = require('crypto');
 
 /**
  * 计算两段文本的字符级相似度（0-1）。
@@ -197,6 +197,150 @@ ${knowledgeContext}
 
 const compactForMatch = (value) => String(value || '').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
 
+const ACTIVE_RISK_STATUSES = new Set(['open', 'proposed']);
+const STICKY_RISK_STATUSES = new Set(['pending_review', 'resolved', 'accepted_risk']);
+
+/**
+ * Normalize legacy booleans and revision application states into the issue-ledger vocabulary.
+ * Rejected revisions mean the user consciously retained the risk; they are not open findings.
+ */
+const normalizeRiskStatus = (point = {}) => {
+    const raw = String(point.issue_status || point.status || point.application_status || '')
+        .trim().toLowerCase().replace(/-/g, '_');
+    if (['pending_review', 'review_pending', 'pending_confirmation'].includes(raw) || point.review_pending === true) {
+        return 'pending_review';
+    }
+    if (['rejected', 'declined', 'accepted_risk'].includes(raw) || point.rejected === true) {
+        return 'accepted_risk';
+    }
+    if (['accepted', 'approved', 'applied', 'effective', 'completed', 'resolved'].includes(raw)
+        || point.resolved === true || point.adopted === true) {
+        return 'resolved';
+    }
+    if (raw === 'superseded' || raw === 'obsolete') return raw;
+    if (raw === 'proposed') return 'proposed';
+    return 'open';
+};
+
+const inferClauseId = (point, diffs = []) => {
+    if (String(point?.clause_id || '').trim()) return String(point.clause_id).trim();
+    const anchor = String(point?.original_clause || point?.original_text || '').trim();
+    if (!anchor) return 'contract';
+    const matched = diffs.find((diff) => String(diff.old_text || '').includes(anchor)
+        || String(diff.new_text || '').includes(anchor));
+    return matched?.clause_id ? String(matched.clause_id) : 'contract';
+};
+
+const riskFingerprint = (point = {}, diffs = []) => {
+    const clauseId = compactForMatch(inferClauseId(point, diffs)) || 'contract';
+    // Prefer a governed code when available; otherwise title+structural clause is the stable legacy identity.
+    // Do not include optional issue_type, evidence text or original wording: those legitimately drift on re-review.
+    const semanticKey = compactForMatch(
+        point.risk_code || point.title || point.review_point || point.type || point.original_clause || 'untitled',
+    );
+    return crypto.createHash('sha256')
+        .update(`risk-ledger-v1|${clauseId}|${semanticKey}`)
+        .digest('hex');
+};
+
+const attachRiskIdentity = (point = {}, contractId, diffs = []) => {
+    const fingerprint = point.risk_fingerprint || riskFingerprint(point, diffs);
+    const issueId = point.issue_id || `risk_${crypto.createHash('sha256')
+        .update(`${contractId}|${fingerprint}`)
+        .digest('hex').slice(0, 32)}`;
+    const status = normalizeRiskStatus(point);
+    return {
+        ...point,
+        issue_id: issueId,
+        risk_fingerprint: fingerprint,
+        clause_id: inferClauseId(point, diffs),
+        issue_status: status,
+        resolved: status === 'resolved',
+        review_pending: status === 'pending_review',
+        accepted_risk: status === 'accepted_risk',
+    };
+};
+
+const affectedByDiff = (point, diffs) => {
+    const anchor = String(point.original_clause || point.original_text || '').trim();
+    const clauseId = String(point.clause_id || '').trim();
+    return diffs.some((diff) => (clauseId && clauseId !== 'contract' && String(diff.clause_id) === clauseId)
+        || (anchor && (String(diff.old_text || '').includes(anchor) || String(diff.new_text || '').includes(anchor))));
+};
+
+/**
+ * Merge a re-review into a stable issue ledger. Existing accepted/rejected/pending decisions are sticky,
+ * unchanged findings are carried forward, and model duplicates are collapsed server-side.
+ */
+const reconcileRiskLedger = ({ contractId, existingPoints = [], newPoints = [], diffs = [], reviewedAt }) => {
+    const timestamp = reviewedAt || new Date().toISOString();
+    const byFingerprint = new Map();
+
+    for (const raw of existingPoints) {
+        const point = attachRiskIdentity(raw, contractId, diffs);
+        const previous = byFingerprint.get(point.risk_fingerprint);
+        if (!previous || (STICKY_RISK_STATUSES.has(point.issue_status)
+            && !STICKY_RISK_STATUSES.has(previous.issue_status))) {
+            byFingerprint.set(point.risk_fingerprint, point);
+        }
+    }
+
+    const seenThisRun = new Set();
+    const insertedFingerprints = new Set();
+    for (const raw of newPoints) {
+        const candidate = attachRiskIdentity(raw, contractId, diffs);
+        if (seenThisRun.has(candidate.risk_fingerprint)) continue;
+        seenThisRun.add(candidate.risk_fingerprint);
+        const existing = byFingerprint.get(candidate.risk_fingerprint);
+        if (existing) {
+            // A human decision remains authoritative. Refresh evidence/anchor, but never resurrect it.
+            const status = STICKY_RISK_STATUSES.has(existing.issue_status)
+                ? existing.issue_status
+                : 'open';
+            byFingerprint.set(candidate.risk_fingerprint, attachRiskIdentity({
+                ...existing,
+                ...candidate,
+                issue_id: existing.issue_id,
+                issue_status: status,
+                first_seen_at: existing.first_seen_at,
+                last_seen_at: timestamp,
+            }, contractId, diffs));
+            continue;
+        }
+        insertedFingerprints.add(candidate.risk_fingerprint);
+        byFingerprint.set(candidate.risk_fingerprint, {
+            ...candidate,
+            issue_status: 'open',
+            first_seen_at: timestamp,
+            last_seen_at: timestamp,
+            isNewIncremental: true,
+        });
+    }
+
+    const resolved = [];
+    for (const [fingerprint, point] of byFingerprint.entries()) {
+        if (seenThisRun.has(fingerprint) || !ACTIVE_RISK_STATUSES.has(point.issue_status)) continue;
+        if (!affectedByDiff(point, diffs)) continue;
+        const anchor = String(point.original_clause || point.original_text || '').trim();
+        const remains = anchor && diffs.some((diff) => String(diff.new_text || '').includes(anchor));
+        if (!remains) {
+            point.issue_status = 'resolved';
+            point.resolved = true;
+            point.review_pending = false;
+            point.resolved_at = timestamp;
+            point.last_seen_at = timestamp;
+            resolved.push(point);
+        }
+    }
+
+    const issues = Array.from(byFingerprint.values());
+    return {
+        issues,
+        newRisks: issues.filter((point) => insertedFingerprints.has(point.risk_fingerprint)),
+        resolvedRisks: resolved,
+    };
+};
+
 const filterGroundedIncrementalPoints = (points, clauseText, knowledge) => {
     const text = compactForMatch(clauseText);
     const seen = new Set();
@@ -310,4 +454,8 @@ module.exports = {
     textSimilarity,
     buildClauseReviewPrompt,
     filterGroundedIncrementalPoints,
+    normalizeRiskStatus,
+    riskFingerprint,
+    attachRiskIdentity,
+    reconcileRiskLedger,
 };

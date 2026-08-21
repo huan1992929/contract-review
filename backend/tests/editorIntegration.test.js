@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
 
 process.env.ONLYOFFICE_URL = 'http://onlyoffice';
 process.env.ONLYOFFICE_JWT_SECRET = process.env.ONLYOFFICE_JWT_SECRET || 'test-onlyoffice-secret';
@@ -56,6 +58,19 @@ test('ONLYOFFICE review mode tracks changes without opening the review navigator
     assert.equal(reviewConfig.editorConfig.customization.review.trackChanges, true);
     assert.equal(reviewConfig.editorConfig.customization.review.showReviewChanges, false);
     assert.equal(editConfig.editorConfig.customization.review.trackChanges, false);
+});
+
+test('server replacement candidates keep authoritative original text ahead of short AI anchors', () => {
+    const source = fs.readFileSync(
+        path.join(__dirname, '../../frontend/src/composables/useReviewEditor.js'),
+        'utf8',
+    );
+    const start = source.indexOf('const buildReplacementCandidates');
+    const end = source.indexOf('const findTextRangeByCandidates', start);
+    const builder = source.slice(start, end);
+    assert.ok(start >= 0 && end > start);
+    assert.ok(builder.indexOf('originalText') < builder.indexOf('item.anchor_hint'));
+    assert.ok(builder.indexOf('item.original_clause') < builder.indexOf('item.anchor_hint'));
 });
 
 test('multi-paragraph replacement avoids inheriting a heading paragraph style', () => {

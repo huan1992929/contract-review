@@ -18,7 +18,7 @@
       </div>
       <div class="flex items-center gap-2">
         <span v-if="isPdfContract" class="text-xs text-amber-600">PDF 不支持采纳</span>
-        <button @click="applyAllSuggestions" :disabled="batchApplying || isPdfContract || !hasUnresolvedSuggestions" class="px-3 py-1.5 text-xs font-medium text-white bg-primary rounded hover:bg-primary-dark disabled:opacity-50 disabled:cursor-not-allowed">
+        <button @click="openBatchPreflight" :disabled="batchApplying || isPdfContract || !hasUnresolvedSuggestions" class="px-3 py-1.5 text-xs font-medium text-white bg-primary rounded hover:bg-primary-dark disabled:opacity-50 disabled:cursor-not-allowed">
           {{ batchApplying ? (reviewApplyMode === 'review' ? '正在修订全部风险...' : '正在编辑全部风险...') : (reviewApplyMode === 'review' ? '一键修订全部风险' : '一键编辑全部风险') }}
         </button>
       </div>
@@ -28,7 +28,7 @@
         v-for="(item, index) in suggestions"
         :id="`suggestion-card-${index}`"
         :key="'ms-' + index"
-        :class="['suggestion-card', isSuggestionExpanded(index) ? 'is-expanded' : '', isSuggestionResolved(item) ? 'is-resolved' : '']"
+        :class="['suggestion-card', isSuggestionExpanded(index) ? 'is-expanded' : '', suggestionCardStateClass(item)]"
       >
         <div class="suggestion-card__header">
           <button
@@ -174,16 +174,41 @@
       </article>
     </div>
     <div v-else class="text-center text-text-light py-8">未发现修改建议</div>
+
+    <el-dialog v-model="batchPreflightVisible" width="520px" class="batch-preflight-dialog" :close-on-click-modal="!batchApplying">
+      <template #header>
+        <div class="preflight-heading">
+          <span class="preflight-kicker">批量修订预检</span>
+          <h3>确认本次写入范围</h3>
+        </div>
+      </template>
+      <p class="preflight-intro">系统只会提交定位明确的建议。无法安全定位的内容将保留在报告中，不会猜测修改合同。</p>
+      <div class="preflight-grid">
+        <article class="preflight-stat is-safe"><strong>{{ batchPreflight.safe }}</strong><span>可安全修订</span></article>
+        <article class="preflight-stat is-comment"><strong>{{ batchPreflight.commentOnly }}</strong><span>建议人工确认</span></article>
+        <article class="preflight-stat is-ambiguous"><strong>{{ batchPreflight.ambiguous }}</strong><span>定位不明确</span></article>
+      </div>
+      <div class="preflight-rule">
+        <span></span>
+        <p>本次操作将生成一个新的审阅版本；写入后仍需在 OnlyOffice 中接受或拒绝修订。</p>
+      </div>
+      <template #footer>
+        <button class="preflight-secondary" :disabled="batchApplying" @click="batchPreflightVisible = false">返回检查</button>
+        <button class="preflight-primary" :disabled="batchApplying || batchPreflight.safe === 0" @click="confirmBatchApply">
+          {{ batchApplying ? '正在生成审阅版本…' : `确认修订 ${batchPreflight.safe} 项` }}
+        </button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script>
 import { computed, inject, nextTick, ref, watch } from 'vue';
-import { ElTooltip } from 'element-plus';
+import { ElDialog, ElTooltip } from 'element-plus';
 
 export default {
   name: 'ReviewSuggestionsTab',
-  components: { ElTooltip },
+  components: { ElDialog, ElTooltip },
   setup() {
     const review = inject('review');
     const {
@@ -200,8 +225,57 @@ export default {
       ? reviewData.modification_suggestions
       : []);
     const expandedSuggestionIndexes = ref([]);
-    const hasUnresolvedSuggestions = computed(() => suggestions.value.some((item) => !isSuggestionApplied(item)));
-    const isSuggestionResolved = (item) => ['pending_review', 'accepted', 'applied'].includes(suggestionApplicationStatus(item));
+    const batchPreflightVisible = ref(false);
+    const isBatchEligible = (item) => suggestionApplicationStatus(item) === 'unresolved';
+    const hasUnresolvedSuggestions = computed(() => suggestions.value.some(isBatchEligible));
+    const isSuggestionResolved = (item) => ['accepted', 'applied'].includes(suggestionApplicationStatus(item));
+    const batchCandidateKind = (item) => {
+      const original = suggestionOriginal(item).trim();
+      const suggested = suggestionText(item).trim();
+      if (suggested && original.length >= 8 && !isMissingClauseSuggestion(item)) return 'safe';
+      if (suggested && (isMissingClauseSuggestion(item) || original)) return 'commentOnly';
+      return 'ambiguous';
+    };
+    const batchPreflight = computed(() => suggestions.value.reduce((result, item) => {
+      if (!isBatchEligible(item)) return result;
+      result[batchCandidateKind(item)] += 1;
+      return result;
+    }, { safe: 0, commentOnly: 0, ambiguous: 0 }));
+    const openBatchPreflight = () => { batchPreflightVisible.value = true; };
+    const confirmBatchApply = async () => {
+      // The legacy batch action selects every locally unresolved item. Shield
+      // preflight-blocked suggestions so only the explicitly counted safe set
+      // can enter the batch request; restore their real states immediately.
+      const shielded = suggestions.value
+        .filter((item) => !isBatchEligible(item) || batchCandidateKind(item) !== 'safe')
+        .map((item) => ({
+          item,
+          applicationStatus: item.application_status,
+          reviewPending: item.review_pending,
+        }));
+      shielded.forEach(({ item }) => {
+        item.application_status = 'pending_review';
+        item.review_pending = true;
+      });
+      try {
+        await applyAllSuggestions();
+        batchPreflightVisible.value = false;
+      } finally {
+        shielded.forEach(({ item, applicationStatus, reviewPending }) => {
+          if (applicationStatus === undefined) delete item.application_status;
+          else item.application_status = applicationStatus;
+          if (reviewPending === undefined) delete item.review_pending;
+          else item.review_pending = reviewPending;
+        });
+      }
+    };
+    const suggestionCardStateClass = (item) => {
+      const status = suggestionApplicationStatus(item);
+      if (status === 'pending_review') return 'is-pending-review';
+      if (status === 'rejected') return 'is-risk-accepted';
+      if (isSuggestionResolved(item)) return 'is-resolved';
+      return '';
+    };
     const suggestionSeverity = (item, index) => {
       const direct = item?.severity || item?.risk_level;
       if (direct) return normalizeSeverity(direct) === 'high' ? 'high' : 'medium';
@@ -209,6 +283,9 @@ export default {
       return highRiskPattern.test(text) ? 'high' : 'medium';
     };
     const suggestionIndexClass = (item, index) => {
+      const status = suggestionApplicationStatus(item);
+      if (status === 'pending_review') return 'suggestion-index--pending';
+      if (status === 'rejected') return 'suggestion-index--risk-accepted';
       if (isSuggestionResolved(item)) return 'suggestion-index--resolved';
       return suggestionSeverity(item, index) === 'high'
         ? 'suggestion-index--high'
@@ -220,17 +297,17 @@ export default {
     };
     const suggestionStatusLabel = (item, index) => {
       const status = suggestionApplicationStatus(item);
-      if (status === 'pending_review') return '已处理·待确认';
-      if (['accepted', 'applied'].includes(status)) return '已生效';
-      if (status === 'rejected') return '已拒绝·待处理';
+      if (status === 'pending_review') return '待审阅';
+      if (['accepted', 'applied'].includes(status)) return '已接受 · 已解决';
+      if (status === 'rejected') return '已拒绝 · 风险已接受';
       return suggestionSeverity(item, index) === 'high' ? '高风险' : '中风险';
     };
     const suggestionActionLabel = (item) => {
       if (item?._applying) return '处理中...';
       const status = suggestionApplicationStatus(item);
-      if (status === 'pending_review') return '已处理·待确认';
-      if (['accepted', 'applied'].includes(status)) return '已生效';
-      const retryPrefix = status === 'rejected' ? '重新' : '';
+      if (status === 'pending_review') return '等待审阅决定';
+      if (['accepted', 'applied'].includes(status)) return '已解决';
+      const retryPrefix = status === 'rejected' ? '重新提出' : '';
       if (isMissingClauseSuggestion(item)) {
         return reviewApplyMode.value === 'review' ? `${retryPrefix}新增修订` : `${retryPrefix}新增至合同`;
       }
@@ -284,9 +361,10 @@ export default {
     return {
       reviewData, suggestions, showPlainLanguage, reviewApplyMode, isPdfContract,
       batchApplying, hasUnresolvedSuggestions,
+      batchPreflightVisible, batchPreflight, openBatchPreflight, confirmBatchApply,
       suggestionTitle, suggestionOriginal, suggestionText, suggestionReason, suggestionCitations, isMissingClauseSuggestion,
       locateText, addDocComment, previewSuggestion, adoptSuggestion,
-      applyAllSuggestions, isSuggestionApplied, isSuggestionResolved, toggleNegotiation, adoptFallbackOption,
+      applyAllSuggestions, isSuggestionApplied, isSuggestionResolved, suggestionCardStateClass, toggleNegotiation, adoptFallbackOption,
       suggestionIndexClass, suggestionIndexLabel, suggestionStatusLabel, suggestionActionLabel,
       isSuggestionExpanded, activateSuggestion, toggleSuggestion,
     };
@@ -335,6 +413,19 @@ export default {
   color: #20764b;
 }
 
+.suggestion-index--pending {
+  border-color: #e8c36b;
+  background: #fff3cf;
+  color: #8a5b00;
+  box-shadow: inset 0 0 0 1px rgba(138, 91, 0, .06);
+}
+
+.suggestion-index--risk-accepted {
+  border-color: #cfd3d1;
+  background: #f1f2f2;
+  color: #5e6160;
+}
+
 .suggestion-index:hover {
   transform: translateY(-1px);
 }
@@ -362,6 +453,20 @@ export default {
 .suggestion-card.is-resolved {
   border-color: #b9dbc9;
   background: #fbfdfc;
+}
+
+.suggestion-card.is-pending-review {
+  border-color: #e8c36b;
+  background: #fffdf6;
+}
+
+.suggestion-card.is-risk-accepted {
+  border-color: #cfd3d1;
+  background: #f6f7f7;
+}
+
+.suggestion-card.is-risk-accepted .suggestion-card__title {
+  color: var(--tp-text-muted);
 }
 
 .suggestion-card__header {
@@ -443,6 +548,31 @@ export default {
   padding: 0 14px 14px 53px;
   border-top: 1px solid rgba(219, 229, 225, 0.72);
 }
+
+:deep(.batch-preflight-dialog) {
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.preflight-heading { display: grid; gap: 4px; }
+.preflight-heading h3 { margin: 0; color: var(--tp-text-primary); font-size: 20px; }
+.preflight-kicker { color: var(--tp-accent); font-size: 10px; font-weight: 800; letter-spacing: .16em; }
+.preflight-intro { margin: 0; color: var(--tp-text-muted); font-size: 13px; line-height: 1.7; }
+.preflight-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
+.preflight-stat { display: grid; gap: 5px; padding: 15px; border: 1px solid var(--tp-line); border-radius: 12px; background: var(--tp-bg-muted); }
+.preflight-stat strong { font-size: 25px; line-height: 1; }
+.preflight-stat span { color: var(--tp-text-muted); font-size: 11px; }
+.preflight-stat.is-safe strong { color: var(--tp-success); }
+.preflight-stat.is-comment strong { color: var(--tp-warning); }
+.preflight-stat.is-ambiguous strong { color: var(--tp-accent); }
+.preflight-rule { display: flex; gap: 10px; margin-top: 16px; padding: 12px; border-radius: 10px; background: var(--tp-accent-subtle); }
+.preflight-rule span { width: 6px; height: 6px; flex: 0 0 6px; margin-top: 6px; border-radius: 50%; background: var(--tp-accent); }
+.preflight-rule p { margin: 0; color: var(--tp-accent-active); font-size: 12px; line-height: 1.6; }
+.preflight-secondary,
+.preflight-primary { min-height: 36px; padding: 0 16px; border-radius: 10px; font-size: 12px; font-weight: 800; }
+.preflight-secondary { border: 1px solid var(--tp-line); background: #fff; color: var(--tp-text-muted); }
+.preflight-primary { margin-left: 8px; background: var(--tp-accent); color: #fff; }
+.preflight-primary:disabled { cursor: not-allowed; opacity: .45; }
 
 @media (max-width: 900px) {
   .suggestion-card__heading {

@@ -50,6 +50,11 @@
           </button>
         </div>
       </div>
+      <div v-if="editorModeSyncError" class="document-sync-alert" role="alert">
+        <span aria-hidden="true">!</span>
+        <p><strong>文档版本未同步</strong>{{ editorModeSyncError }}。请暂停修订并在“工作台”刷新版本。</p>
+        <button type="button" @click="activeAiTab = 'workspace'">查看版本</button>
+      </div>
       <OnlyOfficeEditor
         v-if="contract.editorConfig"
         id="docEditorComponent"
@@ -203,6 +208,32 @@ export default {
   min-height: 58px;
   background: var(--tp-bg-muted);
 }
+
+.document-sync-alert {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #e8c36b;
+  background: var(--tp-warning-bg);
+  color: #795300;
+  font-size: 11px;
+}
+
+.document-sync-alert > span {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  place-items: center;
+  border: 1px solid #d4a441;
+  border-radius: 50%;
+  font-weight: 900;
+}
+
+.document-sync-alert p { min-width: 0; flex: 1; margin: 0; }
+.document-sync-alert strong { margin-right: 7px; }
+.document-sync-alert button { flex: none; border: 0; background: transparent; color: #795300; font-size: 11px; font-weight: 800; text-decoration: underline; }
 
 .document-context {
   flex: 0 0 148px;

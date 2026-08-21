@@ -151,15 +151,19 @@ module.exports = function (router) {
     });
 
     router.post('/:id/force-save', async (req, res) => {
-        const userId = req.header('X-User-ID');
+        const userId = requireRequestUserId(req, res);
+        if (!userId) return;
         const { documentKey } = req.body || {};
-        if (!userId) return res.status(401).json({ error: 'User ID is required for access.' });
 
         try {
-            const contract = await db('contracts').where({ id: req.params.id, user_id: userId }).first();
-            if (!contract) return res.status(404).json({ error: 'Contract not found or you do not have permission to access it.' });
+            const contract = await findOwnedContract(req.params.id, userId);
+            if (!contract) return res.status(404).json({ error: 'Contract not found.' });
             const key = String(documentKey || contract.document_key || '').trim();
             if (!key) return res.status(400).json({ error: 'Document key is required for force-save.' });
+            if (key !== contract.document_key) {
+                return res.status(409).json({ error: '文档版本已变化，请刷新后重试。', code: 'DOCUMENT_VERSION_STALE' });
+            }
+            const previousSavedAt = new Date(contract.onlyoffice_saved_at || 0).getTime();
 
             const result = await postOnlyOfficeCommand({
                 c: 'forcesave',
@@ -170,7 +174,33 @@ module.exports = function (router) {
                 return res.status(502).json({ error: `OnlyOffice force-save failed: ${result.error}`, result });
             }
 
-            res.json({ ok: true, result });
+            // A command acknowledgement only means Document Server accepted the
+            // request. Wait until save-callback has atomically replaced the file
+            // and persisted its OSS hash before allowing an AI mutation.
+            const deadline = Date.now() + 15000;
+            while (Date.now() < deadline) {
+                await sleep(200);
+                const fresh = await db('contracts').where({ id: contract.id })
+                    .select('document_key', 'onlyoffice_saved_at', 'onlyoffice_saved_key', 'oss_sha256')
+                    .first();
+                if (fresh?.document_key !== key) {
+                    return res.status(409).json({ error: '保存期间文档版本已变化，请刷新后重试。', code: 'DOCUMENT_VERSION_STALE' });
+                }
+                if (fresh?.onlyoffice_saved_key === key
+                    && new Date(fresh?.onlyoffice_saved_at || 0).getTime() > previousSavedAt) {
+                    return res.json({
+                        ok: true,
+                        saved: true,
+                        documentKey: key,
+                        ossSha256: fresh.oss_sha256 || '',
+                        result,
+                    });
+                }
+            }
+            return res.status(504).json({
+                error: 'OnlyOffice 保存确认超时，系统未执行后续 AI 修订。请刷新文档后重试。',
+                code: 'ONLYOFFICE_SAVE_ACK_TIMEOUT',
+            });
         } catch (error) {
             console.error(`[ERROR] Failed to force-save contract ${req.params.id}:`, error.response?.data || error.message);
             res.status(500).json({ error: 'Failed to trigger OnlyOffice force-save.' });

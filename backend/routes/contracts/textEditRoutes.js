@@ -5,11 +5,13 @@
 const db = require('../../database');
 const fs = require('fs');
 const path = require('path');
+const { createHash } = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const { requireRequestUserId, findOwnedContract } = require('../../services/contractAnalysis/auth');
 const { createContractVersionSnapshot } = require('../../services/contractAnalysis/version');
 const {
     replaceTextInDocx,
+    replaceTextsInDocxAtomic,
     appendClauseInDocx,
     resolveRevisionGroupInDocx,
     syncRevisionGroupsFromDocx,
@@ -61,9 +63,56 @@ const markSuggestionApplied = (analysis, indexes, mode, documentKey, revisionGro
 
 const tempDocxPath = (storagePath) => `${storagePath}.${uuidv4()}.tmp`;
 
+const activeContractEdits = new Set();
+
+const acquireContractEditLock = (contractId) => {
+    const key = String(contractId);
+    if (activeContractEdits.has(key)) {
+        const error = new Error('DOCUMENT_EDIT_IN_PROGRESS');
+        error.status = 409;
+        throw error;
+    }
+    activeContractEdits.add(key);
+    return () => activeContractEdits.delete(key);
+};
+
+const fileSha256 = (filePath) => createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+
+const restoreFileAtomically = (filePath, contents) => {
+    const restorePath = `${filePath}.restore-${uuidv4()}.tmp`;
+    try {
+        fs.writeFileSync(restorePath, contents);
+        fs.renameSync(restorePath, filePath);
+    } finally {
+        if (fs.existsSync(restorePath)) fs.unlinkSync(restorePath);
+    }
+};
+
 const assertCurrentDocumentKey = (contract, expectedDocumentKey) => {
     if (expectedDocumentKey && expectedDocumentKey !== contract.document_key) {
         const error = new Error('DOCUMENT_VERSION_STALE');
+        error.status = 409;
+        throw error;
+    }
+};
+
+const assertEditPrecondition = (contract, expectedDocumentKey, expectedSha256) => {
+    if (!String(expectedDocumentKey || '').trim()) {
+        const error = new Error('DOCUMENT_VERSION_REQUIRED');
+        error.status = 428;
+        throw error;
+    }
+    assertCurrentDocumentKey(contract, expectedDocumentKey);
+    if (expectedSha256 && contract.oss_sha256 && expectedSha256 !== contract.oss_sha256) {
+        const error = new Error('DOCUMENT_VERSION_STALE');
+        error.status = 409;
+        throw error;
+    }
+};
+
+const assertDocumentFileUnchanged = (filePath, expectedSha256) => {
+    if (fileSha256(filePath) !== expectedSha256) {
+        const error = new Error('DOCUMENT_CONTENT_CHANGED');
         error.status = 409;
         throw error;
     }
@@ -74,15 +123,23 @@ const docxErrorResponse = (res, error, fallback) => {
         DOCX_EXACT_TEXT_NOT_FOUND: '未能在当前 DOCX 中唯一定位该条款。系统已取消本次修改，文档未发生变化。',
         DOCX_TEXT_MATCH_AMBIGUOUS: '文档中存在多个相同片段，无法安全确定修改位置。请先定位并缩短原文后重试。',
         DOCX_COMPLEX_PARAGRAPH_UNSUPPORTED: '目标条款已包含批注、修订或复杂域，无法安全自动改写，请在左侧文档中人工处理。',
+        DOCX_MULTI_PARAGRAPH_REPLACEMENT_UNSUPPORTED: '该建议包含多个段落，不能安全写入单个原文段落。系统已取消修改，请改用新增条款或人工审阅。',
+        DOCX_REPLACEMENT_SCOPE_MISMATCH: '建议内容的结构范围与定位到的原文不一致，系统已阻止写入以避免破坏合同格式。',
+        DOCX_BATCH_ABORTED: '批量修订中至少一项无法安全应用，本次批量已全部取消，文档未发生变化。',
         DOCX_APPEND_MIXED_SECTIONS: '新增建议同时包含多个不同目录的条款，系统已取消写入。请拆分为独立建议后分别新增。',
         DOCUMENT_VERSION_STALE: '文档已被其他修改更新，请刷新后再采纳该建议。',
+        DOCUMENT_VERSION_REQUIRED: '缺少当前文档版本标识，系统已取消写入。请刷新后重试。',
+        DOCUMENT_CONTENT_CHANGED: '编辑期间 OnlyOffice 已保存新内容，系统已取消本次 AI 写入以避免覆盖。请刷新后重试。',
+        DOCUMENT_EDIT_IN_PROGRESS: '该合同正在执行另一次修订，请稍后重试。',
         REVISION_GROUP_NOT_FOUND: '未找到该建议对应的审阅修订组。',
         REVISION_GROUP_NOT_PENDING: '该建议的修订状态已变化，请先同步文档状态后重试。',
         REVISION_GROUP_AMBIGUOUS: '文档内存在重复的修订标识，系统已取消处理以避免误改。',
         INVALID_REVISION_RESOLUTION: '修订处理方式无效。',
     };
     if (messages[error.message]) {
-        return res.status(error.status || 409).json({ error: messages[error.message], code: error.message });
+        return res.status(error.status || 409).json({
+            error: messages[error.message], code: error.message, ...(error.results ? { results: error.results } : {}),
+        });
     }
     console.error(`[ERROR] ${fallback}:`, error);
     return res.status(500).json({ error: fallback });
@@ -161,18 +218,25 @@ module.exports = function (router) {
         if (!userId) return;
         const {
             originalText, suggestedText, originalCandidates = [], mode: rawMode,
-            expectedDocumentKey, suggestionIndex, suggestionId,
+            expectedDocumentKey, expectedSha256, suggestionIndex, suggestionId,
         } = req.body || {};
         if (!String(originalText || '').trim() || suggestedText === undefined || suggestedText === null) {
             return res.status(400).json({ error: 'originalText and suggestedText are required.' });
         }
         const mode = rawMode === 'review' ? 'review' : 'edit';
         let workingPath = '';
+        let releaseEditLock = null;
+        let originalFileContents = null;
+        let contractStoragePath = '';
+        let documentReplaced = false;
+        let commitComplete = false;
 
         try {
             const contract = await findOwnedContract(req.params.id, userId);
             if (!contract) return res.status(404).json({ error: 'Contract not found.' });
-            assertCurrentDocumentKey(contract, expectedDocumentKey);
+            contractStoragePath = contract.storage_path;
+            assertEditPrecondition(contract, expectedDocumentKey, expectedSha256);
+            releaseEditLock = acquireContractEditLock(contract.id);
             const ext = path.extname(contract.storage_path).toLowerCase().replace('.', '');
             if (ext !== 'docx') {
                 return res.status(400).json({
@@ -181,6 +245,8 @@ module.exports = function (router) {
                 });
             }
 
+            originalFileContents = fs.readFileSync(contract.storage_path);
+            const initialFileSha256 = createHash('sha256').update(originalFileContents).digest('hex');
             workingPath = tempDocxPath(contract.storage_path);
             fs.copyFileSync(contract.storage_path, workingPath);
             const analysis = parseAnalysisResult(contract);
@@ -196,15 +262,18 @@ module.exports = function (router) {
                 previousRevisionGroup: previousSuggestion?.revision_group,
                 previousApplicationStatus: previousSuggestion?.application_status,
             });
+            assertDocumentFileUnchanged(contract.storage_path, initialFileSha256);
             const version = await createContractVersionSnapshot(contract, `${mode}-replace-text`);
             fs.renameSync(workingPath, contract.storage_path);
             workingPath = '';
+            documentReplaced = true;
 
             const nextKey = uuidv4();
             const indexes = Number.isInteger(Number(suggestionIndex)) ? [Number(suggestionIndex)] : [];
             const revisionGroups = new Map();
             if (indexes.length && result.revisionGroup) revisionGroups.set(indexes[0], result.revisionGroup);
             await updateContractAfterApply(contract, nextKey, analysis, indexes, mode, revisionGroups);
+            commitComplete = true;
             return res.json({
                 ...result,
                 version,
@@ -213,7 +282,12 @@ module.exports = function (router) {
             });
         } catch (error) {
             if (workingPath && fs.existsSync(workingPath)) fs.unlinkSync(workingPath);
+            if (documentReplaced && !commitComplete && originalFileContents && contractStoragePath) {
+                restoreFileAtomically(contractStoragePath, originalFileContents);
+            }
             return docxErrorResponse(res, error, '服务端 DOCX 替换失败。');
+        } finally {
+            releaseEditLock?.();
         }
     });
 
@@ -224,63 +298,64 @@ module.exports = function (router) {
         if (!suggestions.length) return res.status(400).json({ error: '请至少选择一条修改建议。' });
         const mode = req.body?.mode === 'review' ? 'review' : 'edit';
         let workingPath = '';
+        let releaseEditLock = null;
+        let originalFileContents = null;
+        let contractStoragePath = '';
+        let documentReplaced = false;
+        let commitComplete = false;
 
         try {
             const contract = await findOwnedContract(req.params.id, userId);
             if (!contract) return res.status(404).json({ error: 'Contract not found.' });
-            assertCurrentDocumentKey(contract, req.body?.expectedDocumentKey);
+            contractStoragePath = contract.storage_path;
+            assertEditPrecondition(contract, req.body?.expectedDocumentKey, req.body?.expectedSha256);
+            releaseEditLock = acquireContractEditLock(contract.id);
             const ext = path.extname(contract.storage_path).toLowerCase().replace('.', '');
             if (ext !== 'docx') return res.status(400).json({ error: 'PDF 文件暂不支持原文直接改写。', code: 'PDF_REPLACE_NOT_SUPPORTED' });
 
+            originalFileContents = fs.readFileSync(contract.storage_path);
+            const initialFileSha256 = createHash('sha256').update(originalFileContents).digest('hex');
             workingPath = tempDocxPath(contract.storage_path);
             fs.copyFileSync(contract.storage_path, workingPath);
             const analysis = parseAnalysisResult(contract);
-            const results = [];
-            const appliedIndexes = [];
-            let totalReplacements = 0;
-            for (const [requestIndex, item] of suggestions.entries()) {
+            const replacements = suggestions.map((item) => {
                 const originalText = item.originalText || item.original_text || item.original_clause;
                 const suggestedText = item.suggestedText ?? item.suggested_text ?? item.modification;
-                if (!String(originalText || '').trim() || suggestedText === undefined || suggestedText === null) {
-                    results.push({ index: requestIndex, suggestionIndex: item.suggestionIndex, ok: false, error: '缺少原文或建议修改文本。', title: item.title || '' });
-                    continue;
-                }
-                try {
-                    const previousSuggestion = Number.isInteger(Number(item.suggestionIndex))
-                        ? analysis.modification_suggestions?.[Number(item.suggestionIndex)]
-                        : null;
-                    const stableSuggestionId = suggestionIdentity(contract, item.suggestionIndex, item.suggestionId || item.suggestion_id || item.id);
-                    const result = replaceTextInDocx(
-                        workingPath, originalText, suggestedText,
-                        item.originalCandidates || item.original_candidates || [],
-                        {
-                            mode,
-                            author: 'AI审查',
-                            suggestionId: stableSuggestionId,
-                            revisionGroupId: `ai-${uuidv4()}`,
-                            previousRevisionGroup: previousSuggestion?.revision_group,
-                            previousApplicationStatus: previousSuggestion?.application_status,
-                        },
-                    );
-                    totalReplacements += result.replacements;
-                    if (Number.isInteger(Number(item.suggestionIndex))) appliedIndexes.push(Number(item.suggestionIndex));
-                    results.push({ index: requestIndex, suggestionIndex: item.suggestionIndex, ok: true, ...result, title: item.title || '' });
-                } catch (error) {
-                    results.push({ index: requestIndex, suggestionIndex: item.suggestionIndex, ok: false, error: error.message, title: item.title || '' });
-                }
-            }
+                const previousSuggestion = Number.isInteger(Number(item.suggestionIndex))
+                    ? analysis.modification_suggestions?.[Number(item.suggestionIndex)]
+                    : null;
+                return {
+                    originalText,
+                    suggestedText,
+                    originalCandidates: item.originalCandidates || item.original_candidates || [],
+                    suggestionIndex: item.suggestionIndex,
+                    title: item.title || '',
+                    options: {
+                        mode,
+                        author: 'AI审查',
+                        suggestionId: suggestionIdentity(
+                            contract, item.suggestionIndex, item.suggestionId || item.suggestion_id || item.id,
+                        ),
+                        revisionGroupId: `ai-${uuidv4()}`,
+                        previousRevisionGroup: previousSuggestion?.revision_group,
+                        previousApplicationStatus: previousSuggestion?.application_status,
+                    },
+                };
+            });
+            const batchResult = replaceTextsInDocxAtomic(workingPath, replacements);
+            const results = batchResult.results;
+            const totalReplacements = batchResult.replacements;
+            const appliedIndexes = results
+                .filter((item) => Number.isInteger(Number(item.suggestionIndex)))
+                .map((item) => Number(item.suggestionIndex));
+            const succeededCount = results.length;
+            const failedCount = 0;
 
-            const succeededCount = results.filter((item) => item.ok).length;
-            const failedCount = results.length - succeededCount;
-            if (!succeededCount) {
-                fs.unlinkSync(workingPath);
-                workingPath = '';
-                return res.status(409).json({ error: '所选建议均未能安全定位，文档未发生变化。', results });
-            }
-
+            assertDocumentFileUnchanged(contract.storage_path, initialFileSha256);
             const version = await createContractVersionSnapshot(contract, `${mode}-batch-replace-text`);
             fs.renameSync(workingPath, contract.storage_path);
             workingPath = '';
+            documentReplaced = true;
             const nextKey = uuidv4();
             const revisionGroups = new Map();
             for (const item of results) {
@@ -289,6 +364,7 @@ module.exports = function (router) {
                 }
             }
             await updateContractAfterApply(contract, nextKey, analysis, appliedIndexes, mode, revisionGroups);
+            commitComplete = true;
             return res.json({
                 version, mode,
                 applicationStatus: mode === 'review' ? 'pending_review' : 'applied',
@@ -297,7 +373,12 @@ module.exports = function (router) {
             });
         } catch (error) {
             if (workingPath && fs.existsSync(workingPath)) fs.unlinkSync(workingPath);
+            if (documentReplaced && !commitComplete && originalFileContents && contractStoragePath) {
+                restoreFileAtomically(contractStoragePath, originalFileContents);
+            }
             return docxErrorResponse(res, error, '批量替换失败。');
+        } finally {
+            releaseEditLock?.();
         }
     });
 
@@ -306,7 +387,7 @@ module.exports = function (router) {
         if (!userId) return;
         const body = req.body || {};
         const {
-            title, content, expectedDocumentKey, suggestionIndex,
+            title, content, expectedDocumentKey, expectedSha256, suggestionIndex,
             targetClauseNo, targetHeading,
         } = body;
         const anchorHint = body.anchorHint ?? body.anchor_hint;
@@ -314,14 +395,23 @@ module.exports = function (router) {
         if (!String(content || '').trim()) return res.status(400).json({ error: '追加条款内容不能为空。' });
         const mode = req.body?.mode === 'review' ? 'review' : 'edit';
         let workingPath = '';
+        let releaseEditLock = null;
+        let originalFileContents = null;
+        let contractStoragePath = '';
+        let documentReplaced = false;
+        let commitComplete = false;
 
         try {
             const contract = await findOwnedContract(req.params.id, userId);
             if (!contract) return res.status(404).json({ error: 'Contract not found.' });
-            assertCurrentDocumentKey(contract, expectedDocumentKey);
+            contractStoragePath = contract.storage_path;
+            assertEditPrecondition(contract, expectedDocumentKey, expectedSha256);
+            releaseEditLock = acquireContractEditLock(contract.id);
             const ext = path.extname(contract.storage_path).toLowerCase().replace('.', '');
             if (ext !== 'docx') return res.status(400).json({ error: 'PDF 文件暂不支持追加条款。', code: 'PDF_APPEND_NOT_SUPPORTED' });
 
+            originalFileContents = fs.readFileSync(contract.storage_path);
+            const initialFileSha256 = createHash('sha256').update(originalFileContents).digest('hex');
             workingPath = tempDocxPath(contract.storage_path);
             fs.copyFileSync(contract.storage_path, workingPath);
             const appendResult = appendClauseInDocx(workingPath, title, content, {
@@ -339,6 +429,7 @@ module.exports = function (router) {
                 // The exact clause is already part of the source document, so there is no
                 // pending tracked revision even when the user clicked the review action.
                 await updateContractAfterApply(contract, contract.document_key, parseAnalysisResult(contract), indexes, 'edit');
+                commitComplete = true;
                 return res.json({
                     ok: true,
                     alreadyPresent: true,
@@ -349,12 +440,15 @@ module.exports = function (router) {
                 });
             }
 
+            assertDocumentFileUnchanged(contract.storage_path, initialFileSha256);
             const version = await createContractVersionSnapshot(contract, `${mode}-append-clause`);
             fs.renameSync(workingPath, contract.storage_path);
             workingPath = '';
+            documentReplaced = true;
             const nextKey = uuidv4();
             const indexes = Number.isInteger(Number(suggestionIndex)) ? [Number(suggestionIndex)] : [];
             await updateContractAfterApply(contract, nextKey, parseAnalysisResult(contract), indexes, mode);
+            commitComplete = true;
             return res.json({
                 ok: true, mode, version, ...appendResult,
                 applicationStatus: mode === 'review' ? 'pending_review' : 'applied',
@@ -365,7 +459,12 @@ module.exports = function (router) {
             });
         } catch (error) {
             if (workingPath && fs.existsSync(workingPath)) fs.unlinkSync(workingPath);
+            if (documentReplaced && !commitComplete && originalFileContents && contractStoragePath) {
+                restoreFileAtomically(contractStoragePath, originalFileContents);
+            }
             return docxErrorResponse(res, error, '追加条款失败。');
+        } finally {
+            releaseEditLock?.();
         }
     });
 

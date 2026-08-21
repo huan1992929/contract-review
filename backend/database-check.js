@@ -111,6 +111,8 @@ async function resetAndRebuildDatabase() {
     await ensureColumn('contracts', 'group_id', (table) => table.integer('group_id').unsigned());
     await ensureColumn('contracts', 'oss_key', (table) => table.text('oss_key'));
     await ensureColumn('contracts', 'oss_sha256', (table) => table.string('oss_sha256', 64));
+    await ensureColumn('contracts', 'onlyoffice_saved_at', (table) => table.timestamp('onlyoffice_saved_at'));
+    await ensureColumn('contracts', 'onlyoffice_saved_key', (table) => table.string('onlyoffice_saved_key'));
 
     const hasContractVersionsTable = await db.schema.hasTable('contract_versions');
     if (!hasContractVersionsTable) {
@@ -129,6 +131,47 @@ async function resetAndRebuildDatabase() {
     }
     await ensureColumn('contract_versions', 'oss_key', (table) => table.text('oss_key'));
     await ensureColumn('contract_versions', 'oss_sha256', (table) => table.string('oss_sha256', 64));
+
+    // 增量审查运行记录：只做扩展式迁移，旧 analysis_result.incremental_reviews 继续保留。
+    const hasReviewRunsTable = await db.schema.hasTable('review_runs');
+    if (!hasReviewRunsTable) {
+      console.log('[DB Init] Creating new `review_runs` table...');
+      await db.schema.createTable('review_runs', (table) => {
+        table.increments('id').primary();
+        table.string('run_key', 64).notNullable().unique();
+        table.integer('contract_id').unsigned().notNullable().references('id').inTable('contracts').onDelete('CASCADE');
+        table.integer('user_id').unsigned().references('id').inTable('users').onDelete('SET NULL');
+        table.integer('from_version_no');
+        table.string('status', 32).notNullable().defaultTo('completed');
+        table.jsonb('diff_summary').notNullable().defaultTo('{}');
+        table.timestamp('reviewed_at').notNullable().defaultTo(db.fn.now());
+        table.timestamps(true, true);
+        table.index(['contract_id', 'reviewed_at']);
+      });
+    }
+
+    // 稳定风险账本：fingerprint 在合同内唯一，payload 兼容现有 dispute_points 字段。
+    const hasReviewIssuesTable = await db.schema.hasTable('review_issues');
+    if (!hasReviewIssuesTable) {
+      console.log('[DB Init] Creating new `review_issues` table...');
+      await db.schema.createTable('review_issues', (table) => {
+        table.increments('id').primary();
+        table.string('issue_key', 64).notNullable().unique();
+        table.integer('contract_id').unsigned().notNullable().references('id').inTable('contracts').onDelete('CASCADE');
+        table.string('fingerprint', 64).notNullable();
+        table.string('clause_id', 128);
+        table.string('status', 32).notNullable().defaultTo('open');
+        table.string('title', 512);
+        table.text('original_clause');
+        table.jsonb('payload').notNullable().defaultTo('{}');
+        table.integer('first_seen_run_id').unsigned().references('id').inTable('review_runs').onDelete('SET NULL');
+        table.integer('last_seen_run_id').unsigned().references('id').inTable('review_runs').onDelete('SET NULL');
+        table.timestamp('resolved_at');
+        table.timestamps(true, true);
+        table.unique(['contract_id', 'fingerprint']);
+        table.index(['contract_id', 'status']);
+      });
+    }
 
     const hasContractGroupsTable = await db.schema.hasTable('contract_groups');
     if (!hasContractGroupsTable) {

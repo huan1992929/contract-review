@@ -41,6 +41,19 @@
       </article>
     </section>
 
+    <section v-if="resumableSession" class="resume-panel" aria-labelledby="resume-title">
+      <div class="resume-mark" aria-hidden="true"><span></span></div>
+      <div class="resume-copy">
+        <p class="eyebrow">进行中的审查</p>
+        <h2 id="resume-title">{{ resumableSession.filename }}</h2>
+        <p>{{ resumableSession.stage }} · 进度已保存在当前浏览器，可继续完成审查与修订。</p>
+      </div>
+      <div class="resume-meta">
+        <span>{{ resumableSession.contractType || '合同类型待确认' }}</span>
+        <button class="primary-button resume-button" @click="resumeLastReview">继续审查 <span>→</span></button>
+      </div>
+    </section>
+
     <section class="content-grid">
       <div class="workflow-panel">
         <div class="section-head">
@@ -80,6 +93,8 @@
             <option value="Reviewed">已完成</option>
             <option value="Uploaded">已上传</option>
             <option value="PreAnalyzed">待确认</option>
+            <option value="Analyzing">审查中</option>
+            <option value="Failed">处理失败</option>
           </select>
           <select v-model="typeFilter" class="history-filter-select">
             <option value="">全部类型</option>
@@ -136,6 +151,7 @@ export default {
     const groupReportVisible = ref(false);
     const groupReportLoading = ref(false);
     const groupReport = ref(null);
+    const resumableSession = ref(null);
 
     const {
       history, loading, error, historyPage,
@@ -173,6 +189,26 @@ export default {
       router.push({ path: '/review' });
     };
 
+    const resumeLastReview = () => router.push({ path: '/review' });
+
+    try {
+      const saved = JSON.parse(localStorage.getItem('review_session') || 'null');
+      if (saved?.contract?.id) {
+        const stageMap = {
+          0: '合同已上传',
+          1: '等待确认审查范围',
+          2: saved?.reviewData?.modification_suggestions?.length ? '审查报告已生成' : '正在恢复审查',
+        };
+        resumableSession.value = {
+          filename: saved.contract.original_filename || `合同 #${saved.contract.id}`,
+          contractType: saved.preAnalysisData?.contract_type || '',
+          stage: stageMap[saved.activeStep] || '审查进行中',
+        };
+      }
+    } catch {
+      localStorage.removeItem('review_session');
+    }
+
     const workflow = [
       { step: '01', title: '上传合同', color: '#d6002e', copy: '选择文件，进入合同预览。' },
       { step: '02', title: '确认范围', color: '#5e6160', copy: '确认品类、立场与审查重点。' },
@@ -187,6 +223,7 @@ export default {
       totalHistoryPages, pagedHistory,
       fetchHistory, formatDate, statusText,
       viewReport, closeGroupReport, deleteReport, startNewReview,
+      resumableSession, resumeLastReview,
       searchKeyword, statusFilter, typeFilter,
       availableContractTypes, filteredHistory,
     };
@@ -383,6 +420,51 @@ button:disabled {
   gap: 14px;
 }
 
+.resume-panel + .content-grid {
+  height: calc(100vh - 498px);
+}
+
+.resume-panel {
+  width: calc(100% - 36px);
+  max-width: 1280px;
+  min-height: 94px;
+  margin: 14px auto 0;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 17px 20px;
+  border: 1px solid var(--tp-line);
+  border-left: 3px solid var(--tp-accent);
+  border-radius: 16px;
+  background: linear-gradient(110deg, #fff 0%, #fff 72%, var(--tp-accent-subtle) 145%);
+  box-shadow: var(--tp-shadow-sm);
+}
+
+.resume-mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--tp-accent-subtle);
+}
+
+.resume-mark span {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--tp-accent);
+  border-radius: 50%;
+  box-shadow: 0 0 0 6px rgba(214, 0, 46, .1);
+}
+
+.resume-copy { min-width: 0; }
+.resume-copy .eyebrow { margin-bottom: 5px; color: var(--tp-accent); }
+.resume-copy h2 { margin: 0; overflow: hidden; font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
+.resume-copy p:last-child { margin: 5px 0 0; color: var(--tp-text-muted); font-size: 12px; }
+.resume-meta { display: flex; align-items: center; gap: 18px; color: var(--tp-text-subtle); font-size: 11px; white-space: nowrap; }
+.resume-button { min-height: 36px; padding: 0 16px; }
+
 .evidence-strip {
   width: calc(100% - 36px);
   max-width: 1280px;
@@ -569,6 +651,8 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
+  .resume-panel + .content-grid { height: auto; }
+
   .hero-section {
     width: calc(100% - 28px);
   }
@@ -577,6 +661,9 @@ button:disabled {
     width: calc(100% - 28px);
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .resume-panel { width: calc(100% - 28px); grid-template-columns: 36px 1fr; }
+  .resume-meta { grid-column: 1 / -1; justify-content: space-between; padding-left: 54px; }
 
   .evidence-strip article:nth-child(3) {
     border-left: 0;
