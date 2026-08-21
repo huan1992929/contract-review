@@ -4,6 +4,11 @@ import { fileURLToPath, URL } from 'node:url';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
+  // Keep a release suffix on every generated URL. The outer reverse proxy once
+  // returned index.html for asset requests and browsers cached those responses;
+  // changing only the entry chunk is insufficient because vendor URLs stay stale.
+  const buildRevision = (env.VITE_BUILD_REVISION || '20260821-static-proxy-v2')
+    .replace(/[^a-zA-Z0-9_-]/g, '-');
 
   return {
     base: env.BASE_URL || '/',
@@ -30,6 +35,9 @@ export default defineConfig(({ mode }) => {
       cssCodeSplit: true,
       rollupOptions: {
         output: {
+          entryFileNames: `assets/[name]-[hash]-${buildRevision}.js`,
+          chunkFileNames: `assets/[name]-[hash]-${buildRevision}.js`,
+          assetFileNames: `assets/[name]-[hash]-${buildRevision}[extname]`,
           manualChunks(id) {
             if (!id.includes('node_modules')) return undefined;
             if (id.includes('@onlyoffice')) return 'vendor-onlyoffice';
