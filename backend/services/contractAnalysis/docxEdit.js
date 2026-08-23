@@ -905,10 +905,14 @@ const assertReplacementScopeCompatible = (resolved, suggestedText) => {
         && resolved?.range?.end === String(resolved?.paragraph?.text || '').length;
     const styledHeading = /<w:pStyle\b[^>]*w:val="(?:Heading\d*|Title|标题\d*)"/i
         .test(String(resolved?.paragraph?.xml || ''));
+    const centeredParagraph = /<w:jc\b[^>]*w:val="center"/i
+        .test(String(resolved?.paragraph?.xml || ''));
+    const titleLikeParagraph = styledHeading || centeredParagraph;
 
     // Short headings such as a contract title are only locators. They must not
     // authorize insertion of a complete party block or contract preamble.
-    const shortParagraphExpandedIntoBlock = wholeParagraph
+    const shortTitleExpandedIntoBlock = wholeParagraph
+        && titleLikeParagraph
         && paragraphLength <= 32
         && replacementLength >= 48
         && replacementLength > paragraphLength * 2;
@@ -916,10 +920,10 @@ const assertReplacementScopeCompatible = (resolved, suggestedText) => {
         && matchedLength <= 16
         && replacementLength >= 48
         && replacementLength > matchedLength * 3;
-    const headingExpandedIntoBody = styledHeading
+    const headingExpandedIntoBody = titleLikeParagraph
         && replacementLength >= 48
         && replacementLength > Math.max(paragraphLength * 2, 40);
-    if (shortParagraphExpandedIntoBlock || tinyPartialAnchorExpandedIntoBlock || headingExpandedIntoBody) {
+    if (shortTitleExpandedIntoBlock || tinyPartialAnchorExpandedIntoBlock || headingExpandedIntoBody) {
         throw new Error('DOCX_REPLACEMENT_SCOPE_MISMATCH');
     }
 };

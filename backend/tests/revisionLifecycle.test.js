@@ -93,6 +93,33 @@ test('short contract-title anchor cannot write a full preamble into the title pa
     );
 });
 
+test('complete ordinary payment paragraph can expand into a longer single-paragraph revision', () => {
+    const original = '甲方在确认成果后支付服务费，具体付款日期由甲方另行决定。';
+    const suggested = '合同签订后3个工作日内，甲方向乙方支付合同总价的50%作为预付款；乙方交付全部成果并经甲方验收合格后3个工作日内，甲方向乙方支付剩余50%尾款。甲方逾期付款的，每逾期一日按未付金额的万分之二向乙方支付违约金。';
+    const documentXml = makeDocumentXml(`<w:p><w:r><w:t>${original}</w:t></w:r></w:p>`);
+    const resolved = resolveParagraphMatch(documentXml, original, suggested);
+
+    assert.deepEqual(resolved.range, { start: 0, end: original.length });
+    assert.equal(resolved.replacement, suggested);
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'body-clause-expansion-'));
+    const filePath = path.join(tempDir, 'contract.docx');
+    try {
+        writeMinimalDocx(filePath, documentXml);
+        replaceTextInDocx(filePath, original, suggested, [], {
+            mode: 'review',
+            revisionGroupId: 'payment-group',
+            suggestionId: 'suggestion-payment',
+        });
+        const xml = new AdmZip(filePath).getEntry('word/document.xml').getData().toString('utf8');
+        assert.equal((xml.match(/<w:del\b/g) || []).length, 1);
+        assert.equal((xml.match(/<w:ins\b/g) || []).length, 1);
+        assert.equal(paragraphText(xml), suggested);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
 test('multi-paragraph replacement fails closed instead of flattening lines into one paragraph', () => {
     const documentXml = makeDocumentXml('<w:p><w:r><w:t>1.1 原条款。</w:t></w:r></w:p>');
     assert.throws(
