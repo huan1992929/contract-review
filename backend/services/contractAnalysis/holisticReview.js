@@ -110,9 +110,13 @@ const selectBasis = (basisRefs, knowledge) => {
 const normalizeChange = (item, plainText) => {
     const operation = item?.operation === 'append' ? 'append' : 'replace';
     const currentClause = String(item?.current_clause || item?.original_text || '').trim();
+    const existingRevisionText = String(item?.existing_revision_text || '').trim();
+    const reviewBaseline = String(item?.review_baseline || '').trim();
     const suggestedText = String(item?.suggested_text || '').trim();
     if (!suggestedText) return null;
     if (operation === 'replace' && !anchoredInContract(currentClause, plainText)) return null;
+    if (existingRevisionText && !anchoredInContract(existingRevisionText, plainText)) return null;
+    if (reviewBaseline && !anchoredInContract(reviewBaseline, plainText)) return null;
     if (operation === 'append' && currentClause && currentClause !== '合同未约定'
         && !anchoredInContract(currentClause, plainText)) return null;
     if (compact(suggestedText).length >= 8 && compact(plainText).includes(compact(suggestedText))) return null;
@@ -121,6 +125,8 @@ const normalizeChange = (item, plainText) => {
         clause_id: String(item?.clause_id || '').trim(),
         current_clause: currentClause || '合同未约定',
         original_text: currentClause || '合同未约定',
+        ...(existingRevisionText ? { existing_revision_text: existingRevisionText } : {}),
+        ...(reviewBaseline ? { review_baseline: reviewBaseline } : {}),
         suggested_text: suggestedText,
         anchor_hint: String(item?.anchor_hint || currentClause).trim().slice(0, 120),
     };
@@ -147,6 +153,7 @@ const materializeGroundedIssue = ({ rawIssue, candidate, knowledge, plainText })
         related_clauses: changes.map((item) => ({
             clause_id: item.clause_id,
             text: item.current_clause,
+            ...(item.existing_revision_text ? { existing_revision_text: item.existing_revision_text } : {}),
         })),
         cross_clause: changes.length > 1,
         basis,
@@ -163,6 +170,8 @@ const materializeGroundedIssue = ({ rawIssue, candidate, knowledge, plainText })
         operation: primary.operation,
         current_clause: primary.current_clause,
         original_text: primary.original_text,
+        ...(primary.existing_revision_text ? { existing_revision_text: primary.existing_revision_text } : {}),
+        ...(primary.review_baseline ? { review_baseline: primary.review_baseline } : {}),
         suggested_text: primary.suggested_text,
         anchor_hint: primary.anchor_hint,
         basis,
@@ -177,7 +186,7 @@ const dedupeChanges = (changes) => {
     const seen = new Set();
     const output = [];
     for (const item of changes) {
-        const key = compact(`${item.operation}|${item.current_clause}`);
+        const key = compact(`${item.operation}|${item.current_clause}|${item.existing_revision_text || ''}`);
         if (!key || seen.has(key)) continue;
         seen.add(key);
         output.push(item);

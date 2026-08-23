@@ -609,7 +609,8 @@ export default {
 .revision-preflight span,
 .revision-apply-error span { color: var(--tp-text-muted); }
 .revision-preflight.is-safe_new,
-.revision-preflight.is-safe_supersede { border-color: #b9dbc9; background: #f4fbf7; color: #20764b; }
+.revision-preflight.is-safe_supersede,
+.revision-preflight.is-safe_composite { border-color: #b9dbc9; background: #f4fbf7; color: #20764b; }
 .revision-preflight.is-needs_new_round { border-color: #e8c36b; background: #fff9e9; color: #8a5b00; }
 .revision-preflight.is-human_conflict,
 .revision-preflight.is-unsupported,

@@ -154,6 +154,11 @@ const docxErrorResponse = (res, error, fallback) => {
         DOCX_COMMENTED_PARAGRAPH_UNSUPPORTED: '目标条款包含批注范围，系统已停止自动修订以避免破坏批注。',
         DOCX_STRUCTURED_PARAGRAPH_UNSUPPORTED: '目标条款包含域、内容控件或超链接，暂不支持自动修订。',
         DOCX_HUMAN_REVISION_CONFLICT: '目标条款包含人工或对方的未决修订，请建立下一轮或先处理冲突。',
+        DOCX_COMPOSITE_REVISION_AMBIGUOUS: '目标条款包含多组已有修订，无法安全合并为一个待审条款。',
+        DOCX_COMPOSITE_REVISION_CONTENT_MISMATCH: '审核结果中的原文或已有修订意见与当前 DOCX 不一致，请重新全文审核。',
+        DOCX_COMPOSITE_REVISION_ORDER_UNSUPPORTED: '目标条款的已有修订顺序异常，系统已停止自动覆盖。',
+        DOCX_COMPOSITE_REVISION_GAP_UNSUPPORTED: '目标条款的原文与修订意见之间还包含其他正文，不能安全整体替换。',
+        DOCX_COMMENT_CONFLICT: '目标条款的批注范围与已有修订交叉，不能安全整体替换。',
         DOCX_EXISTING_SYSTEM_REVISION_NEEDS_NEW_ROUND: '目标条款已有无法归属到本轮建议的系统修订，请建立下一轮处理。',
         DOCX_BATCH_RANGE_OVERLAP: '多条建议修改了同一条款的重叠范围，系统已取消整批写入。',
         DOCX_BATCH_SAME_PARAGRAPH_UNSUPPORTED: '多条建议同时修改同一段落，请先合并为一条建议。',
@@ -371,6 +376,8 @@ module.exports = function (router) {
                         suggestionId: identity.suggestionId,
                         previousRevisionGroup: previousRevisionGroupForChange(previousSuggestion, identity.changeIndex),
                         previousApplicationStatus: previousSuggestion?.application_status,
+                        existingRevisionText: item.existingRevisionText || item.existing_revision_text || '',
+                        reviewBaseline: item.reviewBaseline || item.review_baseline || '',
                     },
                 });
             }
@@ -389,7 +396,7 @@ module.exports = function (router) {
                 counts.total += 1;
                 counts[result.status] = (counts[result.status] || 0) + 1;
                 return counts;
-            }, { total: 0, safe_new: 0, safe_supersede: 0, needs_new_round: 0, human_conflict: 0, unsupported: 0 });
+            }, { total: 0, safe_new: 0, safe_supersede: 0, safe_composite: 0, needs_new_round: 0, human_conflict: 0, unsupported: 0 });
             return res.json({ results, summary, documentKey: contract.document_key, documentSha256: fileSha256(contract.storage_path) });
         } catch (error) {
             return docxErrorResponse(res, error, '审阅修订预检失败。');
@@ -404,6 +411,8 @@ module.exports = function (router) {
         const {
             originalText, suggestedText, originalCandidates = [], mode: rawMode,
             expectedDocumentKey, expectedSha256, suggestionIndex, suggestionId,
+            existingRevisionText, existing_revision_text: existingRevisionTextSnake,
+            reviewBaseline, review_baseline: reviewBaselineSnake,
         } = req.body || {};
         if (!String(originalText || '').trim() || suggestedText === undefined || suggestedText === null) {
             return res.status(400).json({ error: 'originalText and suggestedText are required.' });
@@ -448,6 +457,8 @@ module.exports = function (router) {
                 revisionGroupId: `ai-${uuidv4()}`,
                 previousRevisionGroup: previousRevisionGroupForChange(previousSuggestion, 0),
                 previousApplicationStatus: previousSuggestion?.application_status,
+                existingRevisionText: existingRevisionText || existingRevisionTextSnake || '',
+                reviewBaseline: reviewBaseline || reviewBaselineSnake || '',
             });
             assertDocumentFileUnchanged(contract.storage_path, initialFileSha256);
             const version = await createContractVersionSnapshot(contract, `${mode}-replace-text`);
@@ -537,6 +548,8 @@ module.exports = function (router) {
                         revisionGroupId: `ai-${uuidv4()}`,
                         previousRevisionGroup: previousRevisionGroupForChange(previousSuggestion, changeIndex),
                         previousApplicationStatus: previousSuggestion?.application_status,
+                        existingRevisionText: item.existingRevisionText || item.existing_revision_text || '',
+                        reviewBaseline: item.reviewBaseline || item.review_baseline || '',
                     },
                 };
             });

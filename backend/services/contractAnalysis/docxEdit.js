@@ -479,25 +479,79 @@ const replaceTextWithRevision = (paragraphXml, range, replacement, options = {})
     return replaceTextWithRevisionGroup(paragraphXml, range, replacement, options).xml;
 };
 
+const bookmarkEventsWithTextOffsets = (paragraphXml) => {
+    const events = [];
+    let textOffset = 0;
+    const tokenPattern = /<w:bookmark(?:Start|End)\b[^>]*\/>|<w:(?:t|delText)\b[^>]*>[\s\S]*?<\/w:(?:t|delText)>/g;
+    let token;
+    while ((token = tokenPattern.exec(String(paragraphXml || ''))) !== null) {
+        if (/^<w:bookmark/.test(token[0])) {
+            events.push({ offset: textOffset, tag: token[0] });
+            continue;
+        }
+        textOffset += unescapeXmlText(token[0].replace(
+            /^<w:(?:t|delText)\b[^>]*>|<\/w:(?:t|delText)>$/g,
+            '',
+        )).length;
+    }
+    return events;
+};
+
 const pairedWholeParagraphBookmarks = (paragraphXml, range, textLength) => {
     const starts = String(paragraphXml || '').match(/<w:bookmarkStart\b[^>]*\/>/g) || [];
     const ends = String(paragraphXml || '').match(/<w:bookmarkEnd\b[^>]*\/>/g) || [];
-    if (!starts.length && !ends.length) return { starts: [], ends: [] };
+    if (!starts.length && !ends.length) return { starts: [], ends: [], events: [] };
 
     const wholeParagraph = range?.start === 0 && range?.end === textLength;
     const bookmarkId = (tag) => tag.match(/\bw:id=(?:"([^"]+)"|'([^']+)')/)?.slice(1).find(Boolean) || '';
     const startIds = starts.map(bookmarkId);
     const endIds = ends.map(bookmarkId);
+    const uniqueStarts = startIds.every(
+        (id) => id && startIds.filter((candidate) => candidate === id).length === 1,
+    );
+    const uniqueEnds = endIds.every(
+        (id) => id && endIds.filter((candidate) => candidate === id).length === 1,
+    );
     const balanced = startIds.length === endIds.length
-        && startIds.every((id) => id && startIds.filter((candidate) => candidate === id).length === 1)
-        && endIds.every((id) => id && endIds.filter((candidate) => candidate === id).length === 1)
+        && uniqueStarts
+        && uniqueEnds
         && startIds.every((id) => endIds.includes(id));
 
-    // A complete paragraph replacement may safely retain locally paired
-    // navigation/risk bookmarks by expanding their range over the new tracked
-    // revision. Partial or cross-paragraph bookmarks remain fail-closed.
-    if (!wholeParagraph || !balanced) throw new Error('DOCX_COMPLEX_PARAGRAPH_UNSUPPORTED');
-    return { starts, ends };
+    const events = bookmarkEventsWithTextOffsets(paragraphXml);
+    const crossesReplacementBoundary = events.some((event) => (
+        event.offset > Number(range?.start || 0) && event.offset < Number(range?.end || 0)
+    ));
+
+    // A complete paragraph replacement can retain unique local and cross-
+    // paragraph boundary markers by expanding them over the replacement. For a
+    // partial replacement, balanced bookmarks are also safe when none of their
+    // endpoints falls inside the replaced text. This preserves nested anchors
+    // such as a clause-body bookmark that begins after the clause number.
+    if (wholeParagraph && uniqueStarts && uniqueEnds) {
+        return {
+            starts,
+            ends,
+            events: [
+                ...starts.map((tag) => ({ offset: 0, tag })),
+                ...ends.map((tag) => ({ offset: textLength, tag })),
+            ],
+        };
+    }
+    if (!balanced || crossesReplacementBoundary) throw new Error('DOCX_COMPLEX_PARAGRAPH_UNSUPPORTED');
+    return { starts, ends, events };
+};
+
+const renderTextWithBookmarkEvents = (text, start, end, events, runProperties) => {
+    const parts = [];
+    let cursor = start;
+    for (const event of events) {
+        const offset = Math.max(start, Math.min(end, event.offset));
+        parts.push(makeRun(text.slice(cursor, offset), runProperties));
+        parts.push(event.tag);
+        cursor = offset;
+    }
+    parts.push(makeRun(text.slice(cursor, end), runProperties));
+    return parts.join('');
 };
 
 /**
@@ -530,8 +584,12 @@ const replaceTextWithRevisionGroup = (paragraphXml, range, replacement, options 
     const inserted = replacement
         ? `<w:ins w:id="${id + 1}" w:author="${author}" w:date="${date}">${makeRun(replacement, runProperties)}</w:ins>`
         : '';
+    const beforeEvents = bookmarks.events.filter((event) => event.offset <= range.start);
+    const afterEvents = bookmarks.events.filter((event) => event.offset >= range.end);
+    const beforeXml = renderTextWithBookmarkEvents(text, 0, range.start, beforeEvents, runProperties);
+    const afterXml = renderTextWithBookmarkEvents(text, range.end, text.length, afterEvents, runProperties);
     return {
-        xml: `${startTag}${pPr}${bookmarks.starts.join('')}${makeRun(before, runProperties)}${deleted}${inserted}${makeRun(after, runProperties)}${bookmarks.ends.join('')}</w:p>`,
+        xml: `${startTag}${pPr}${beforeXml}${deleted}${inserted}${afterXml}</w:p>`,
         revisionGroup: {
             group_id: groupId,
             suggestion_id: suggestionId,
@@ -575,6 +633,115 @@ const makeRevisionPlanningError = (code, details = {}) => {
     const error = new Error(code);
     Object.assign(error, details);
     return error;
+};
+
+const revisionElementId = (elementXml) => String(elementXml || '')
+    .match(/\bw:id=(?:"([^"]+)"|'([^']+)')/)?.slice(1).find(Boolean) || '';
+
+const paragraphCompositeRevision = (paragraphXml) => {
+    const xml = String(paragraphXml || '');
+    const deletions = xml.match(/<w:del\b[^>]*>[\s\S]*?<\/w:del>/g) || [];
+    const insertions = xml.match(/<w:ins\b[^>]*>[\s\S]*?<\/w:ins>/g) || [];
+    if (!deletions.length && !insertions.length) return null;
+    if (deletions.length !== 1 || insertions.length !== 1) {
+        throw makeRevisionPlanningError('DOCX_COMPOSITE_REVISION_AMBIGUOUS');
+    }
+    if (/<w:(?:hyperlink|fldChar|instrText|sdt|smartTag|moveFrom|moveTo|conflictIns|conflictDel)\b/.test(xml)) {
+        throw makeRevisionPlanningError('DOCX_STRUCTURED_PARAGRAPH_UNSUPPORTED');
+    }
+    const deletion = deletions[0];
+    const insertion = insertions[0];
+    const deletionStart = xml.indexOf(deletion);
+    const insertionStart = xml.indexOf(insertion);
+    if (deletionStart < 0 || insertionStart < 0 || deletionStart >= insertionStart) {
+        throw makeRevisionPlanningError('DOCX_COMPOSITE_REVISION_ORDER_UNSUPPORTED');
+    }
+    const deletionEnd = deletionStart + deletion.length;
+    const insertionEnd = insertionStart + insertion.length;
+    const between = xml.slice(deletionEnd, insertionStart)
+        .replace(/<w:bookmark(?:Start|End)\b[^>]*\/>/g, '')
+        .trim();
+    if (between) throw makeRevisionPlanningError('DOCX_COMPOSITE_REVISION_GAP_UNSUPPORTED');
+
+    const commentStarts = xml.match(/<w:commentRangeStart\b[^>]*\/>/g) || [];
+    const commentEnds = xml.match(/<w:commentRangeEnd\b[^>]*\/>/g) || [];
+    const commentRefs = xml.match(/<w:commentReference\b[^>]*\/>/g) || [];
+    if (commentStarts.length || commentEnds.length || commentRefs.length) {
+        if (commentStarts.length !== 1 || commentEnds.length !== 1 || commentRefs.length !== 1) {
+            throw makeRevisionPlanningError('DOCX_COMMENT_CONFLICT');
+        }
+        const commentId = (tag) => revisionElementId(tag);
+        if (!commentId(commentStarts[0])
+            || commentId(commentStarts[0]) !== commentId(commentEnds[0])
+            || commentId(commentStarts[0]) !== commentId(commentRefs[0])
+            || xml.indexOf(commentStarts[0]) > deletionStart
+            || xml.indexOf(commentEnds[0]) < insertionEnd
+            || xml.indexOf(commentRefs[0]) < insertionEnd) {
+            throw makeRevisionPlanningError('DOCX_COMMENT_CONFLICT');
+        }
+    }
+
+    const originalText = revisionElementText(deletion);
+    const existingRevisionText = revisionElementText(insertion);
+    if (!originalText || !existingRevisionText) {
+        throw makeRevisionPlanningError('DOCX_COMPOSITE_REVISION_EMPTY');
+    }
+    return {
+        deletion,
+        insertion,
+        deletionStart,
+        deletionEnd,
+        insertionStart,
+        insertionEnd,
+        originalText,
+        existingRevisionText,
+        originalRevisionId: revisionElementId(deletion),
+        existingRevisionId: revisionElementId(insertion),
+        authors: [...new Set([revisionElementAuthor(deletion), revisionElementAuthor(insertion)].filter(Boolean))],
+    };
+};
+
+const replaceCompositeTrackedRevisionGroup = (paragraphXml, composite, replacement, options = {}) => {
+    const xml = String(paragraphXml || '');
+    const id = Number(options.revisionId || 1);
+    const author = escapeXmlAttr(options.author || 'AI审查');
+    const date = escapeXmlAttr(options.date || new Date().toISOString());
+    const groupId = String(options.revisionGroupId || `revision-${id}-${id + 1}`);
+    const suggestionId = String(options.suggestionId || groupId);
+    const runProperties = (
+        composite.deletion.match(/<w:rPr\b[\s\S]*?<\/w:rPr>/)?.[0]
+        || composite.insertion.match(/<w:rPr\b[\s\S]*?<\/w:rPr>/)?.[0]
+        || ''
+    );
+    const deleted = `<w:del w:id="${id}" w:author="${author}" w:date="${date}">`
+        + makeRun(composite.originalText, runProperties, 'w:delText')
+        + makeRun(composite.existingRevisionText, runProperties, 'w:delText')
+        + '</w:del>';
+    const inserted = replacement
+        ? `<w:ins w:id="${id + 1}" w:author="${author}" w:date="${date}">${makeRun(replacement, runProperties)}</w:ins>`
+        : '';
+    return {
+        xml: `${xml.slice(0, composite.deletionStart)}${deleted}${inserted}${xml.slice(composite.insertionEnd)}`,
+        revisionGroup: {
+            group_id: groupId,
+            suggestion_id: suggestionId,
+            author: options.author || 'AI审查',
+            delete_revision_id: id,
+            insert_revision_id: replacement ? id + 1 : null,
+            original_text: `${composite.originalText}${composite.existingRevisionText}`,
+            suggested_text: String(replacement || ''),
+            paragraph_prefix: '',
+            paragraph_suffix: '',
+            status: 'pending',
+            created_at: options.date || new Date().toISOString(),
+            composite_baseline: {
+                original_text: composite.originalText,
+                existing_revision_text: composite.existingRevisionText,
+                revision_ids: [composite.originalRevisionId, composite.existingRevisionId],
+                authors: composite.authors,
+            },
+        },
+    };
 };
 
 /**
@@ -1151,7 +1318,63 @@ const shouldReplaceWholeClauseParagraph = (paragraphTextValue, needle, replaceme
     );
 };
 
-const resolveParagraphMatch = (documentXml, originalText, suggestedText, originalCandidates = []) => {
+const resolveCompositeRevisionMatches = (paragraphs, candidates, suggestedText, options = {}) => {
+    const matches = [];
+    const existingRevisionHint = String(options.existingRevisionText || options.existing_revision_text || '').trim();
+    const reviewBaselineHint = String(options.reviewBaseline || options.review_baseline || '').trim();
+    for (let index = 0; index < paragraphs.length; index += 1) {
+        const paragraph = paragraphs[index];
+        if (!/<w:(?:ins|del)\b/.test(paragraph.xml)) continue;
+
+        const rawDeletions = paragraph.xml.match(/<w:del\b[^>]*>[\s\S]*?<\/w:del>/g) || [];
+        const rawInsertions = paragraph.xml.match(/<w:ins\b[^>]*>[\s\S]*?<\/w:ins>/g) || [];
+        const searchable = [
+            ...rawDeletions.map(revisionElementText),
+            ...rawInsertions.map(revisionElementText),
+        ];
+        const candidateMatches = candidates.some((candidate) => searchable.some((text) => (
+            normalizedContains(text, candidate) || normalizedContains(candidate, text)
+        )));
+        const hintMatches = existingRevisionHint && searchable.some((text) => normalizedContains(text, existingRevisionHint));
+        if (!candidateMatches && !hintMatches) continue;
+
+        if (rawDeletions.length !== 1 || rawInsertions.length !== 1) {
+            const authors = revisionAuthorsInParagraph(paragraph.xml);
+            if (authors.some((author) => author !== String(options.author || 'AI审查'))) {
+                throw makeRevisionPlanningError('DOCX_HUMAN_REVISION_CONFLICT', { authors });
+            }
+            throw makeRevisionPlanningError('DOCX_EXISTING_SYSTEM_REVISION_NEEDS_NEW_ROUND', { authors });
+        }
+
+        const composite = paragraphCompositeRevision(paragraph.xml);
+        if (existingRevisionHint
+            && normalizedText(composite.existingRevisionText) !== normalizedText(existingRevisionHint)) {
+            throw makeRevisionPlanningError('DOCX_COMPOSITE_REVISION_CONTENT_MISMATCH');
+        }
+        if (reviewBaselineHint
+            && ![
+                composite.originalText,
+                composite.existingRevisionText,
+            ].some((text) => normalizedContains(text, reviewBaselineHint))) {
+            throw makeRevisionPlanningError('DOCX_COMPOSITE_REVISION_CONTENT_MISMATCH');
+        }
+        const replacement = stripReplacementInstructionPrefix(suggestedText);
+        matches.push({
+            paragraphIndex: index,
+            paragraph,
+            range: { start: 0, end: paragraph.text.length },
+            matchedText: `${composite.originalText}${composite.existingRevisionText}`,
+            replacement,
+            clauseNo: parseClausePrefix(composite.originalText).clauseNo
+                || parseClausePrefix(composite.existingRevisionText).clauseNo,
+            strategy: 'existing-revision-composite',
+            compositeRevision: composite,
+        });
+    }
+    return matches;
+};
+
+const resolveParagraphMatch = (documentXml, originalText, suggestedText, originalCandidates = [], options = {}) => {
     const paragraphs = [];
     const pattern = /<w:p\b[^>]*>[\s\S]*?<\/w:p>/g;
     let match;
@@ -1167,6 +1390,7 @@ const resolveParagraphMatch = (documentXml, originalText, suggestedText, origina
             if (!needle || (bodyOnly && !source.clauseNo)) continue;
             for (let index = 0; index < paragraphs.length; index += 1) {
                 const paragraph = paragraphs[index];
+                if (/<w:(?:ins|del)\b/.test(paragraph.xml)) continue;
                 const target = parseClausePrefix(paragraph.text);
                 if (bodyOnly && target.clauseNo !== source.clauseNo) continue;
                 let range = findDocxTextRange(paragraph.text, needle);
@@ -1204,6 +1428,9 @@ const resolveParagraphMatch = (documentXml, originalText, suggestedText, origina
     if (!matches.length) matches = findMatches(true);
     if (!matches.length) {
         matches = resolveTableLabelValueMatches(documentXml, paragraphs, candidates, suggestedText);
+    }
+    if (!matches.length) {
+        matches = resolveCompositeRevisionMatches(paragraphs, candidates, suggestedText, options);
     }
     if (!matches.length) {
         const joinedParagraphs = normalizeForDocxMatch(paragraphs.map((paragraph) => paragraph.text).join('')).value;
@@ -1255,11 +1482,17 @@ const replacementPlanningStatus = (code) => {
 const replacementPlanningMessage = (status, code) => {
     if (status === 'safe_new') return '可在当前基线上新建审阅修订。';
     if (status === 'safe_supersede') return '可安全替换当前系统的未决修订。';
+    if (status === 'safe_composite') return '可将修订前原文和已有修订意见作为整体继续审阅。';
     if (status === 'human_conflict') return '目标条款存在人工或对方修订，不能自动覆盖。';
     if (status === 'needs_new_round') return '当前修订无法严格验证为本轮同一建议，请新建修订轮次。';
     const messages = {
         DOCX_COMMENTED_PARAGRAPH_UNSUPPORTED: '目标条款包含批注范围，为避免损坏批注已阻止自动修订。',
         DOCX_STRUCTURED_PARAGRAPH_UNSUPPORTED: '目标条款包含域、内容控件或链接等复杂结构。',
+        DOCX_COMPOSITE_REVISION_AMBIGUOUS: '目标条款包含多组已有修订，无法安全作为一个整体继续审阅。',
+        DOCX_COMPOSITE_REVISION_CONTENT_MISMATCH: '审核引用的修订前原文或已有修订意见与当前 DOCX 不一致。',
+        DOCX_COMPOSITE_REVISION_ORDER_UNSUPPORTED: '已有删除和插入修订的顺序异常。',
+        DOCX_COMPOSITE_REVISION_GAP_UNSUPPORTED: '已有原文与修订意见之间还包含其他正文。',
+        DOCX_COMMENT_CONFLICT: '已有批注范围与修订对交叉，无法安全整体替换。',
         DOCX_MULTI_PARAGRAPH_REPLACEMENT_UNSUPPORTED: '建议跨越多个段落，当前不能安全自动修订。',
         DOCX_CROSS_PARAGRAPH_REPLACEMENT_UNSUPPORTED: '目标原文跨越多个段落，当前不能安全自动修订。',
         DOCX_BATCH_RANGE_OVERLAP: '批量建议的目标文本范围重叠。',
@@ -1291,18 +1524,23 @@ const planTextReplacementInDocumentXml = (
 ) => {
     const priorRevision = normalizePreviousRevisionForReplacement(sourceXml, options);
     const documentXml = priorRevision.xml;
-    const resolved = resolveParagraphMatch(documentXml, originalText, suggestedText, originalCandidates);
-    classifyProtectedParagraph(resolved.paragraph.xml, String(options.author || 'AI审查'));
-    if (options.mode === 'review') {
+    const resolved = resolveParagraphMatch(documentXml, originalText, suggestedText, originalCandidates, options);
+    if (!resolved.compositeRevision) {
+        classifyProtectedParagraph(resolved.paragraph.xml, String(options.author || 'AI审查'));
+    }
+    if (options.mode === 'review' && !resolved.compositeRevision) {
         // Reuse the exact bookmark and structure guards used by the writer.
         pairedWholeParagraphBookmarks(resolved.paragraph.xml, resolved.range, resolved.paragraph.text.length);
     }
+    const compositeStatus = resolved.compositeRevision ? 'safe_composite' : '';
     return {
         preparedXml: documentXml,
         priorRevision,
         resolved,
-        status: priorRevision.status === 'superseded' ? 'safe_supersede' : 'safe_new',
-        code: priorRevision.status === 'superseded' ? 'REVISION_SAFE_SUPERSEDE' : 'REVISION_SAFE_NEW',
+        status: compositeStatus || (priorRevision.status === 'superseded' ? 'safe_supersede' : 'safe_new'),
+        code: compositeStatus
+            ? 'REVISION_SAFE_COMPOSITE'
+            : (priorRevision.status === 'superseded' ? 'REVISION_SAFE_SUPERSEDE' : 'REVISION_SAFE_NEW'),
     };
 };
 
@@ -1348,13 +1586,20 @@ const replaceTextInDocumentXml = (sourceXml, originalText, suggestedText, origin
     if (options.mode === 'review') {
         const maxRevisionId = Math.max(0, ...(documentXml.match(/w:id="(\d+)"/g) || [])
             .map((value) => Number(value.match(/\d+/)?.[0] || 0)));
-        const revisionResult = replaceTextWithRevisionGroup(resolved.paragraph.xml, resolved.range, resolved.replacement, {
+        const revisionOptions = {
             revisionId: maxRevisionId + 1,
             author: options.author,
             date: options.date,
             revisionGroupId: options.revisionGroupId,
             suggestionId: options.suggestionId,
-        });
+        };
+        const revisionResult = resolved.compositeRevision
+            ? replaceCompositeTrackedRevisionGroup(
+                resolved.paragraph.xml, resolved.compositeRevision, resolved.replacement, revisionOptions,
+            )
+            : replaceTextWithRevisionGroup(
+                resolved.paragraph.xml, resolved.range, resolved.replacement, revisionOptions,
+            );
         paragraphXml = revisionResult.xml;
         revisionGroup = revisionResult.revisionGroup;
     } else {
@@ -1460,15 +1705,22 @@ const planTextReplacementsInDocumentXml = (sourceXml, replacements = []) => {
                 item.originalText,
                 item.suggestedText,
                 item.originalCandidates || [],
+                item.options || {},
             );
-            classifyProtectedParagraph(resolved.paragraph.xml, String(item?.options?.author || 'AI审查'));
-            if (item?.options?.mode === 'review') {
+            if (!resolved.compositeRevision) {
+                classifyProtectedParagraph(resolved.paragraph.xml, String(item?.options?.author || 'AI审查'));
+            }
+            if (item?.options?.mode === 'review' && !resolved.compositeRevision) {
                 pairedWholeParagraphBookmarks(
                     resolved.paragraph.xml, resolved.range, resolved.paragraph.text.length,
                 );
             }
-            const status = state.priorRevision?.status === 'superseded' ? 'safe_supersede' : 'safe_new';
-            const code = status === 'safe_supersede' ? 'REVISION_SAFE_SUPERSEDE' : 'REVISION_SAFE_NEW';
+            const status = resolved.compositeRevision
+                ? 'safe_composite'
+                : (state.priorRevision?.status === 'superseded' ? 'safe_supersede' : 'safe_new');
+            const code = status === 'safe_composite'
+                ? 'REVISION_SAFE_COMPOSITE'
+                : (status === 'safe_supersede' ? 'REVISION_SAFE_SUPERSEDE' : 'REVISION_SAFE_NEW');
             state.plan = { resolved, status, code };
             state.result = makePreflightResult(index, identity, status, code, {
                 revisionGroup: item?.options?.previousRevisionGroup || null,
@@ -1521,7 +1773,7 @@ const planTextReplacementsInDocumentXml = (sourceXml, replacements = []) => {
         counts.total += 1;
         counts[result.status] = (counts[result.status] || 0) + 1;
         return counts;
-    }, { total: 0, safe_new: 0, safe_supersede: 0, needs_new_round: 0, human_conflict: 0, unsupported: 0 });
+    }, { total: 0, safe_new: 0, safe_supersede: 0, safe_composite: 0, needs_new_round: 0, human_conflict: 0, unsupported: 0 });
     return { preparedXml, states, results, summary };
 };
 
@@ -1547,13 +1799,14 @@ const replaceTextsInDocxAtomic = (filePath, replacements = []) => {
     const entry = zip.getEntry('word/document.xml');
     if (!entry) throw new Error('DOCX_DOCUMENT_XML_NOT_FOUND');
     const planning = planTextReplacementsInDocumentXml(entry.getData().toString('utf8'), replacements);
-    const failed = planning.results.some((item) => !['safe_new', 'safe_supersede'].includes(item.status));
+    const safeStatuses = ['safe_new', 'safe_supersede', 'safe_composite'];
+    const failed = planning.results.some((item) => !safeStatuses.includes(item.status));
     if (failed) {
         const error = new Error('DOCX_BATCH_ABORTED');
         error.results = planning.results.map((item) => ({
             ...item,
-            ok: ['safe_new', 'safe_supersede'].includes(item.status),
-            error: ['safe_new', 'safe_supersede'].includes(item.status) ? undefined : item.code,
+            ok: safeStatuses.includes(item.status),
+            error: safeStatuses.includes(item.status) ? undefined : item.code,
         }));
         error.summary = planning.summary;
         throw error;
@@ -1572,18 +1825,20 @@ const replaceTextsInDocxAtomic = (filePath, replacements = []) => {
         let paragraphXml;
         let revisionGroup = null;
         if (item?.options?.mode === 'review') {
-            const revisionResult = replaceTextWithRevisionGroup(
-                resolved.paragraph.xml,
-                resolved.range,
-                resolved.replacement,
-                {
-                    revisionId: nextRevisionId,
-                    author: item.options.author,
-                    date: item.options.date,
-                    revisionGroupId: item.options.revisionGroupId,
-                    suggestionId: item.options.suggestionId,
-                },
-            );
+            const revisionOptions = {
+                revisionId: nextRevisionId,
+                author: item.options.author,
+                date: item.options.date,
+                revisionGroupId: item.options.revisionGroupId,
+                suggestionId: item.options.suggestionId,
+            };
+            const revisionResult = resolved.compositeRevision
+                ? replaceCompositeTrackedRevisionGroup(
+                    resolved.paragraph.xml, resolved.compositeRevision, resolved.replacement, revisionOptions,
+                )
+                : replaceTextWithRevisionGroup(
+                    resolved.paragraph.xml, resolved.range, resolved.replacement, revisionOptions,
+                );
             paragraphXml = revisionResult.xml;
             revisionGroup = revisionResult.revisionGroup;
             nextRevisionId += 2;
@@ -1635,6 +1890,8 @@ module.exports = {
     replaceTextInXmlRuns,
     replaceTextWithRevision,
     replaceTextWithRevisionGroup,
+    paragraphCompositeRevision,
+    replaceCompositeTrackedRevisionGroup,
     detectRevisionGroupStatusInXml,
     detectRevisionGroupStatusInDocx,
     resolveRevisionGroupInXml,

@@ -98,6 +98,44 @@ test('风险级取证形成一个根风险和多个联动修改', () => {
     assert.equal(issue.finding.basis[0].source_id, 'k1');
 });
 
+test('已有修订条款同时校验修订前原文和修订意见并保留复合锚点', () => {
+    const plainText = [
+        '【修订前原文】双方签署后五个工作日内一次性支付全部服务费。',
+        '【已有修订意见（系统管理员）】建议按部署和验收节点分期付款。',
+    ].join('\n');
+    const plan = normalizeHolisticPlan({
+        candidate_issues: [{
+            title: '付款节点仍需完善',
+            anchors: [
+                '双方签署后五个工作日内一次性支付全部服务费。',
+                '建议按部署和验收节点分期付款。',
+            ],
+        }],
+    }, plainText);
+    const issue = materializeGroundedIssue({
+        candidate: plan.candidates[0],
+        plainText,
+        knowledge: [{ source_type: 'weknora', source_id: 'k-review', law: '思库服务合同模板', content: '付款应与验收挂钩' }],
+        rawIssue: {
+            accepted: true,
+            basis_refs: [1],
+            changes: [{
+                operation: 'replace',
+                current_clause: '双方签署后五个工作日内一次性支付全部服务费。',
+                existing_revision_text: '建议按部署和验收节点分期付款。',
+                review_baseline: '双方签署后五个工作日内一次性支付全部服务费。',
+                suggested_text: '合同签署后支付预付款，验收合格后支付尾款。',
+            }],
+        },
+    });
+    assert.ok(issue);
+    assert.equal(issue.suggestion.existing_revision_text, '建议按部署和验收节点分期付款。');
+    assert.equal(
+        issue.suggestion.linked_changes[0].review_baseline,
+        '双方签署后五个工作日内一次性支付全部服务费。',
+    );
+});
+
 test('终审合并重复根风险并拒绝不成立风险', () => {
     const makeIssue = (id, clause) => ({
         issue_id: id,

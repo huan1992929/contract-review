@@ -97,7 +97,7 @@ const runHolisticReview = async ({
 2. 付款、交付、验收、退款、违约若属于同一交易根因，只生成一个候选问题，并在 anchors 中关联全部相关条款。
 3. 合同其他条款已经覆盖、仅属措辞偏好、一般最佳实践、低概率想象或对思库有利的安排，不得列为风险。
 4. candidate_issues 最多12项，按实质影响排序；anchors 必须逐字来自合同。缺失控制才可 missing_control=true。
-5. 文档中的批注、修订建议、审阅说明不是已生效合同义务，不得当作合同正文再次报风险。
+5. 合同中以【修订前原文】和【已有修订意见】标出的内容属于同一待审条款：必须同时评估，但已有修订意见不是已生效合同义务，不得只审核其中一边或把意见当正文重复报风险。
 6. 不引用模型记忆，不输出 markdown。
 
 完整合同：
@@ -130,14 +130,14 @@ ${wrapContractContent(plainText)}`;
 ${knowledge.map(compactKnowledgeLine).join('\n')}
 
 输出结构：
-{"accepted":true,"title":"根风险标题","issue_type":"范本差异/合规瑕疵/计算错误/文本错误","severity":"high/medium/low","description":"结合全文的实质风险及后果","plain_language":"业务人员可理解的说明","basis_refs":[1],"changes":[{"operation":"replace/append","clause_id":"条号","current_clause":"逐字合同原文；新增时为合同未约定","suggested_text":"可直接落入合同的完整文本","anchor_hint":"短定位锚点"}]}
+{"accepted":true,"title":"根风险标题","issue_type":"范本差异/合规瑕疵/计算错误/文本错误","severity":"high/medium/low","description":"结合全文的实质风险及后果","plain_language":"业务人员可理解的说明","basis_refs":[1],"changes":[{"operation":"replace/append","clause_id":"条号","current_clause":"逐字修订前原文；新增时为合同未约定","existing_revision_text":"如该条款已有修订则逐字填写修订意见，否则留空","review_baseline":"修订前原文与已有修订意见中用于整体定位的逐字文本","suggested_text":"可直接落入合同的完整文本","anchor_hint":"短定位锚点"}]}
 
 硬性要求：
 1. 只有知识库依据直接支持、且从思库实际交易角色看会造成实质损失或责任失衡时 accepted=true，否则输出 {"accepted":false,"basis_refs":[],"changes":[]}。
 2. 同一根风险只输出一项；需要同步修改付款、验收、退款等多处时放入同一 changes 数组，不得拆成多项。
-3. replace 的 current_clause 必须逐字存在于合同；append 仅用于合同确实缺失控制，current_clause 填“合同未约定”。
+3. replace 的 current_clause 必须逐字来自合同的修订前原文；若同一条款存在【已有修订意见】，必须同时逐字填写 existing_revision_text，并从两者整体判断后给出最新 suggested_text。append 仅用于合同确实缺失控制，current_clause 填“合同未约定”。
 4. 不得擅自发明比例、金额、天数；知识库无明确标准时使用【待业务确认】占位。
-5. 文档中的既有批注、修订建议和审阅说明不视为已生效条款。
+5. 既有修订意见不视为已生效条款，但必须与修订前原文作为一个整体审核；不得只审原文，也不得忽略已有修订对风险的缓解或新增影响。
 6. 不输出 markdown。`;
             const rawIssue = await callJsonLLM(evidencePrompt, reviewLlmRequestOptions);
             return materializeGroundedIssue({ rawIssue, candidate, knowledge, plainText });
@@ -360,7 +360,7 @@ ${relevantKnowledge.map((item, index) => `[${index + 1}] [${item.source_type}] $
   "compliance_findings": [{"issue_type":"范本差异/合规瑕疵/计算错误/文本错误","title":"待优化项标题","original_clause":"合同原文","basis":[{"source_type":"weknora/law/case/template/review_rule","title":"知识库依据标题","clause":"条号或范本条款","content":"依据原文"}],"description":"问题及实务后果"}],
   "missing_clauses": [{"title":"缺失条款","basis":[{"source_type":"weknora/template/review_rule","title":"知识库依据标题","content":"依据原文"}],"description":"为什么缺失","suggested_clause":"可补充条款"}],
   "party_review": [{"title":"主体审查项","description":"审查结论","plain_language":"大白话说明"}],
-  "modification_suggestions": [{"issue_type":"范本差异/合规瑕疵/计算错误/文本错误","operation":"replace/append","title":"建议标题","current_clause":"现状条款原文；新增条款时填写合同未约定","basis":[{"source_type":"weknora/law/case/template/review_rule","title":"知识库依据标题","clause":"条号或范本条款","content":"依据原文"}],"suggested_text":"可直接替换或新增的完整条款","anchor_hint":"用于定位的短语"}],
+  "modification_suggestions": [{"issue_type":"范本差异/合规瑕疵/计算错误/文本错误","operation":"replace/append","title":"建议标题","current_clause":"修订前原文；新增条款时填写合同未约定","existing_revision_text":"已有修订意见，没有则留空","review_baseline":"用于整体定位的修订前原文或已有修订意见","basis":[{"source_type":"weknora/law/case/template/review_rule","title":"知识库依据标题","clause":"条号或范本条款","content":"依据原文"}],"suggested_text":"可直接替换或新增的完整条款","anchor_hint":"用于定位的短语"}],
   "breach_cost_analysis": [{"scenario":"违约场景","legal_basis":"知识库依据","estimated_cost":"可由合同明确计算的成本"}],
   "text_errors": [{"original_clause":"原文","description":"上下文矛盾、文字、数值或定义问题","suggested_text":"修正文本"}],
   "calculation_errors": [{"table_name":"表格名称","item":"错误项","original_value":"原值或公式","calculated_value":"复算值","description":"计算说明"}]
@@ -370,11 +370,11 @@ ${relevantKnowledge.map((item, index) => `[${index + 1}] [${item.source_type}] $
 - core_information 必须覆盖成本业务和法务合规维度；合同未约定的维度标明“合同未约定”，不得补造条款。
 - 仅在检索结果中存在匹配范本或标准条款原文时输出 template_differences；没有范本依据时保持空数组，不得把通用经验冒充范本。
 - compliance_findings 和 modification_suggestions 的 issue_type 只能是“范本差异”“合规瑕疵”“计算错误”“文本错误”之一。
-- modification_suggestions 每一项必须包含 current_clause、basis 和 suggested_text；current_clause 必须尽量逐字摘录合同原文中的完整句子或段落。
+- modification_suggestions 每一项必须包含 current_clause、basis 和 suggested_text；若审核输入标有【修订前原文】和【已有修订意见】，current_clause 与 existing_revision_text 必须分别逐字摘录，并把二者作为同一待审条款整体判断。
 - compliance_findings、missing_clauses 和 modification_suggestions 每一项的 basis 必须逐字引用本次提供的知识库依据标题和原文；无法直接对应时不得输出该项。
 - 只报告对思库当前范本有实质偏离且会影响履约、付款、验收、权利归属或责任承担的问题；不得把措辞偏好、一般最佳实践或模型记忆扩张为风险。
 - 同一实质问题只输出一次，不得按多个相近标题拆分；全文修改建议最多 24 项，并按实质影响优先。
-- 合同已有原文需要修改时 operation 必须为 replace；合同缺失条款需要新增时 operation 必须为 append，current_clause 填“合同未约定”，不得把缺失说明伪装成可替换的合同原文。
+- 合同已有原文需要修改时 operation 必须为 replace；已有修订意见不是已生效正文，但不得忽略，最新建议应同时替代修订前原文与已有修订意见；合同缺失条款需要新增时 operation 必须为 append，current_clause 填“合同未约定”。
 - 必须逐条比对「法律与裁判依据」中每一条法律条文与合同对应条款，特别关注天数、期限、比例、金额、次数等强制性数字是否一致；合同条款与知识库依据不一致时，必须列入 compliance_findings 并给出对应的 modification_suggestions，不得遗漏。
 - 如果没有检索依据，不得编造法条或案例，只能说明"当前知识库未检索到直接依据"。
 - 不得调用或引用外部知识、模型记忆、未提供的境外法规、范本或案例。
@@ -483,7 +483,7 @@ ${clauseKnowledge.map((item, index) => `[${index + 1}] [${item.source_type}] ${i
   "compliance_findings": [{"issue_type":"范本差异/合规瑕疵/计算错误/文本错误","title":"待优化项标题","original_clause":"合同原文","basis":[{"source_type":"weknora/law/case/template/review_rule","title":"知识库依据标题","content":"依据原文"}],"description":"问题及实务后果"}],
   "missing_clauses": [],
   "party_review": [{"title":"主体审查项","description":"审查结论","plain_language":"大白话说明"}],
-  "modification_suggestions": [{"issue_type":"范本差异/合规瑕疵/计算错误/文本错误","operation":"replace","title":"建议标题","current_clause":"当前条款原文","basis":[{"source_type":"weknora/law/case/template/review_rule","title":"知识库依据标题","clause":"条号或范本条款","content":"依据原文"}],"suggested_text":"可直接替换的完整条款","anchor_hint":"用于定位的短语"}],
+  "modification_suggestions": [{"issue_type":"范本差异/合规瑕疵/计算错误/文本错误","operation":"replace","title":"建议标题","current_clause":"修订前原文","existing_revision_text":"已有修订意见，没有则留空","review_baseline":"用于整体定位的原文或修订意见","basis":[{"source_type":"weknora/law/case/template/review_rule","title":"知识库依据标题","clause":"条号或范本条款","content":"依据原文"}],"suggested_text":"可直接替换的完整条款","anchor_hint":"用于定位的短语"}],
   "breach_cost_analysis": [{"scenario":"违约场景","legal_basis":"知识库依据","estimated_cost":"可由合同明确计算的成本"}],
   "text_errors": [{"original_clause":"原文","description":"上下文矛盾、文字、数值或定义问题","suggested_text":"修正文本"}],
   "calculation_errors": [{"table_name":"表格名称","item":"错误项","original_value":"原值或公式","calculated_value":"复算值","description":"计算说明"}]
@@ -493,7 +493,7 @@ ${clauseKnowledge.map((item, index) => `[${index + 1}] [${item.source_type}] ${i
 - 仅摘取和审查当前条款实际涉及的内容，不得凭空补充其他业务。
 - 仅在检索结果中存在范本或标准条款原文时输出 template_differences；没有依据时保持空数组。
 - compliance_findings 和 modification_suggestions 的 issue_type 只能是“范本差异”“合规瑕疵”“计算错误”“文本错误”之一。
-- modification_suggestions 每一项必须包含 current_clause、basis 和 suggested_text，current_clause 必须逐字摘录当前条款原文。
+- modification_suggestions 每一项必须包含 current_clause、basis 和 suggested_text；如当前条款同时标有修订前原文和已有修订意见，必须分别逐字填写 current_clause 与 existing_revision_text，并整体审核后生成最新建议。
 - 当前是单条款审查，只允许 operation=replace；missing_clauses 必须为空，不得在每个条款重复推导全局缺失内容。
 - compliance_findings 和 modification_suggestions 的 basis 必须逐字引用本次提供的知识库依据标题和原文；没有直接依据时相应数组必须为空。
 - 当前条款最多输出 3 个实质问题；同一付款、验收、知识产权、违约或解除问题不得拆分为多个相近建议。

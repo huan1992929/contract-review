@@ -27,15 +27,21 @@ export function useReviewActions(state, editor, helpers) {
     const PREFLIGHT_STATUS = Object.freeze({
         SAFE_NEW: 'safe_new',
         SAFE_SUPERSEDE: 'safe_supersede',
+        SAFE_COMPOSITE: 'safe_composite',
         NEEDS_NEW_ROUND: 'needs_new_round',
         HUMAN_CONFLICT: 'human_conflict',
         UNSUPPORTED: 'unsupported',
         FAILED: 'preflight_failed',
     });
-    const PREFLIGHT_SAFE = new Set([PREFLIGHT_STATUS.SAFE_NEW, PREFLIGHT_STATUS.SAFE_SUPERSEDE]);
+    const PREFLIGHT_SAFE = new Set([
+        PREFLIGHT_STATUS.SAFE_NEW,
+        PREFLIGHT_STATUS.SAFE_SUPERSEDE,
+        PREFLIGHT_STATUS.SAFE_COMPOSITE,
+    ]);
     const preflightStatusLabel = (status) => ({
         safe_new: '可安全新增修订',
         safe_supersede: '可更新本轮建议',
+        safe_composite: '可基于已有修订继续审阅',
         needs_new_round: '需建立下一轮修订',
         human_conflict: '存在人工或对方修订冲突',
         unsupported: '当前文档结构不支持自动修订',
@@ -44,6 +50,7 @@ export function useReviewActions(state, editor, helpers) {
     const preflightDefaultMessage = (status) => ({
         safe_new: '已确认目标条款可安全生成新的审阅修订。',
         safe_supersede: '已识别本轮系统修订，将以最新建议更新，原历史仍保留。',
+        safe_composite: '已同时识别修订前原文和已有修订意见，将作为一个整体生成最新审阅修订。',
         needs_new_round: '该条款已进入上一轮或对方回稿，请先建立新的谈判轮次。',
         human_conflict: '目标与人工或对方待审修订重叠，请在左侧文档确认后再处理。',
         unsupported: '目标包含跨段、复杂域或无法唯一定位的结构，本次不会改动合同。',
@@ -53,6 +60,7 @@ export function useReviewActions(state, editor, helpers) {
         const status = String(value || '').trim().toLowerCase().replace(/-/g, '_');
         if (['safe', 'new', 'safe_to_apply'].includes(status)) return PREFLIGHT_STATUS.SAFE_NEW;
         if (['supersede', 'safe_update', 'same_round'].includes(status)) return PREFLIGHT_STATUS.SAFE_SUPERSEDE;
+        if (['composite', 'review_pair', 'existing_revision_pair'].includes(status)) return PREFLIGHT_STATUS.SAFE_COMPOSITE;
         if (['new_round', 'next_round'].includes(status)) return PREFLIGHT_STATUS.NEEDS_NEW_ROUND;
         if (['conflict', 'manual_conflict', 'counterparty_conflict'].includes(status)) return PREFLIGHT_STATUS.HUMAN_CONFLICT;
         if (['not_supported', 'blocked', 'ambiguous'].includes(status)) return PREFLIGHT_STATUS.UNSUPPORTED;
@@ -86,6 +94,10 @@ export function useReviewActions(state, editor, helpers) {
                 originalCandidates: operation === 'replace'
                     ? buildReplacementCandidates(originalText, change || item)
                     : [],
+                existingRevisionText: change?.existing_revision_text || change?.existingRevisionText
+                    || item?.existing_revision_text || item?.existingRevisionText || '',
+                reviewBaseline: change?.review_baseline || change?.reviewBaseline
+                    || item?.review_baseline || item?.reviewBaseline || '',
                 anchorHint: change?.anchor_hint || change?.anchorHint || item?.anchor_hint || item?.anchorHint || '',
                 targetClauseNo: change?.target_clause_no || change?.targetClauseNo || item?.target_clause_no || item?.targetClauseNo || '',
                 targetHeading: change?.target_heading || change?.targetHeading || item?.target_heading || item?.targetHeading
@@ -130,9 +142,11 @@ export function useReviewActions(state, editor, helpers) {
                 message: '同一根风险同时包含新增与替换，当前不支持拆分写入，请合并为一个可原子处理的建议。',
             });
         } else if (statuses.length && statuses.every((value) => PREFLIGHT_SAFE.has(value))) {
-            status = statuses.includes(PREFLIGHT_STATUS.SAFE_SUPERSEDE)
-                ? PREFLIGHT_STATUS.SAFE_SUPERSEDE
-                : PREFLIGHT_STATUS.SAFE_NEW;
+            status = statuses.includes(PREFLIGHT_STATUS.SAFE_COMPOSITE)
+                ? PREFLIGHT_STATUS.SAFE_COMPOSITE
+                : (statuses.includes(PREFLIGHT_STATUS.SAFE_SUPERSEDE)
+                    ? PREFLIGHT_STATUS.SAFE_SUPERSEDE
+                    : PREFLIGHT_STATUS.SAFE_NEW);
         } else {
             status = [PREFLIGHT_STATUS.HUMAN_CONFLICT, PREFLIGHT_STATUS.NEEDS_NEW_ROUND, PREFLIGHT_STATUS.UNSUPPORTED]
                 .find((value) => statuses.includes(value)) || PREFLIGHT_STATUS.UNSUPPORTED;

@@ -152,6 +152,112 @@ test('whole-paragraph review revision preserves paired navigation and risk bookm
     assert.equal(paragraphText(accepted.xml), suggested);
 });
 
+test('partial replacement preserves a nested clause-body bookmark at its original text boundary', () => {
+    const original = '7.2 AI 内容局限性：甲方应独立核实关键数据。乙方不对AI生成内容的准确性承担保证责任。';
+    const target = '乙方不对AI生成内容的准确性承担保证责任。';
+    const suggested = '乙方不对AI生成内容的一般准确性承担保证责任，但因平台技术缺陷造成损失的除外。';
+    const paragraph = [
+        '<w:p><w:pPr><w:spacing w:after="120"/></w:pPr>',
+        '<w:bookmarkStart w:id="88" w:name="tp_issue_outer"/>',
+        '<w:r><w:t xml:space="preserve">7.2 </w:t></w:r>',
+        '<w:bookmarkStart w:id="14" w:name="auto_fouce_22"/>',
+        `<w:r><w:t>${original.slice(4)}</w:t></w:r>`,
+        '<w:bookmarkEnd w:id="14"/><w:bookmarkEnd w:id="88"/></w:p>',
+    ].join('');
+    const replaced = replaceTextInDocumentXml(makeDocumentXml(paragraph), target, suggested, [], {
+        mode: 'review', revisionGroupId: 'partial-bookmark-group', suggestionId: 'partial-bookmark-suggestion',
+    });
+    assert.equal((replaced.xml.match(/<w:bookmarkStart\b/g) || []).length, 2);
+    assert.equal((replaced.xml.match(/<w:bookmarkEnd\b/g) || []).length, 2);
+    assert.ok(replaced.xml.indexOf('>7.2 </w:t>') < replaced.xml.indexOf('w:name="auto_fouce_22"'));
+    assert.ok(replaced.xml.indexOf('w:name="auto_fouce_22"') < replaced.xml.indexOf('<w:del'));
+    assert.match(paragraphText(replaced.xml), /7\.2 AI 内容局限性/);
+    assert.match(paragraphText(replaced.xml), /平台技术缺陷造成损失的除外/);
+});
+
+test('whole-paragraph replacement preserves a unique cross-paragraph bookmark endpoint', () => {
+    const original = '如因此导致服务无法继续的，乙方按未使用天数比例退还剩余服务费，不承担其他赔偿责任。';
+    const suggested = '如因此导致服务无法继续的，乙方应退还剩余服务费并赔偿甲方直接损失。';
+    const paragraph = [
+        '<w:p><w:bookmarkStart w:id="93" w:name="tp_issue_local"/>',
+        `<w:r><w:t>${original.slice(0, -1)}</w:t></w:r>`,
+        '<w:bookmarkEnd w:id="13"/>',
+        '<w:r><w:t>。</w:t></w:r>',
+        '<w:bookmarkEnd w:id="93"/></w:p>',
+    ].join('');
+    const replaced = replaceTextInDocumentXml(makeDocumentXml(paragraph), original, suggested, [], {
+        mode: 'review', revisionGroupId: 'cross-bookmark-group', suggestionId: 'cross-bookmark-suggestion',
+    });
+    assert.equal((replaced.xml.match(/w:id="13"/g) || []).length, 1);
+    assert.equal((replaced.xml.match(/w:id="93"/g) || []).length, 2);
+    assert.equal((replaced.xml.match(/<w:del\b/g) || []).length, 1);
+    assert.equal((replaced.xml.match(/<w:ins\b/g) || []).length, 1);
+});
+
+test('existing original and revision opinion become one auditable replacement group', () => {
+    const original = '双方签署后五个工作日内一次性支付全部服务费。';
+    const existingRevision = '建议按部署和验收节点分期付款。';
+    const suggested = '合同签署后支付预付款，部署完成并验收合格后支付尾款。';
+    const paragraph = [
+        '<w:p><w:commentRangeStart w:id="0"/>',
+        '<w:bookmarkStart w:id="40" w:name="tp_issue_payment"/>',
+        `<w:del w:id="101" w:author="系统管理员"><w:r><w:delText>${original}</w:delText></w:r></w:del>`,
+        `<w:ins w:id="102" w:author="系统管理员"><w:r><w:t>${existingRevision}</w:t></w:r></w:ins>`,
+        '<w:bookmarkEnd w:id="40"/><w:commentRangeEnd w:id="0"/>',
+        '<w:r><w:commentReference w:id="0"/></w:r></w:p>',
+    ].join('');
+    const documentXml = makeDocumentXml(paragraph);
+    const preflight = preflightTextReplacementInDocumentXml(documentXml, original, suggested, [], {
+        mode: 'review',
+        author: 'AI审查',
+        existingRevisionText: existingRevision,
+        reviewBaseline: original,
+    });
+    assert.equal(preflight.status, 'safe_composite');
+    assert.equal(preflight.code, 'REVISION_SAFE_COMPOSITE');
+
+    const replaced = replaceTextInDocumentXml(documentXml, original, suggested, [], {
+        mode: 'review',
+        author: 'AI审查',
+        revisionGroupId: 'composite-group',
+        suggestionId: 'composite-suggestion',
+        existingRevisionText: existingRevision,
+        reviewBaseline: original,
+    });
+    assert.equal((replaced.xml.match(/<w:del\b/g) || []).length, 1);
+    assert.equal((replaced.xml.match(/<w:ins\b/g) || []).length, 1);
+    assert.equal(replaced.xml.includes('w:id="101"'), false);
+    assert.equal(replaced.xml.includes('w:id="102"'), false);
+    assert.equal(replaced.xml.includes('<w:commentRangeStart w:id="0"/>'), true);
+    assert.equal(replaced.revisionGroup.composite_baseline.original_text, original);
+    assert.equal(replaced.revisionGroup.composite_baseline.existing_revision_text, existingRevision);
+    const deletion = replaced.xml.match(/<w:del\b[^>]*>[\s\S]*?<\/w:del>/)[0];
+    assert.ok(deletion.indexOf(original) < deletion.indexOf(existingRevision));
+
+    const accepted = resolveRevisionGroupInXml(replaced.xml, replaced.revisionGroup, 'accept');
+    assert.equal(paragraphText(accepted.xml), suggested);
+});
+
+test('multiple existing revision pairs remain ambiguous and fail closed', () => {
+    const paragraph = [
+        '<w:p>',
+        '<w:del w:id="1" w:author="用户"><w:r><w:delText>原付款条款</w:delText></w:r></w:del>',
+        '<w:ins w:id="2" w:author="用户"><w:r><w:t>第一版付款意见</w:t></w:r></w:ins>',
+        '<w:del w:id="3" w:author="用户"><w:r><w:delText>原验收条款</w:delText></w:r></w:del>',
+        '<w:ins w:id="4" w:author="用户"><w:r><w:t>第一版验收意见</w:t></w:r></w:ins>',
+        '</w:p>',
+    ].join('');
+    const preflight = preflightTextReplacementInDocumentXml(
+        makeDocumentXml(paragraph),
+        '原付款条款',
+        '最新付款条款',
+        [],
+        { mode: 'review', author: 'AI审查', existingRevisionText: '第一版付款意见' },
+    );
+    assert.equal(preflight.status, 'human_conflict');
+    assert.equal(preflight.code, 'DOCX_HUMAN_REVISION_CONFLICT');
+});
+
 test('target paragraphs with comments or human pending revisions return precise protection errors', () => {
     const original = '2.2 甲方应在签署后支付全部费用。';
     const suggested = '2.2 甲方应在验收合格后支付全部费用。';

@@ -70,8 +70,33 @@ const removeElements = (xml, names) => {
     return result;
 };
 
-// 审核必须基于尚未采纳修改前的权威合同，而不是把 Word 待审修订中的建议
-// 当成已生效条款。这里只在内存副本中拒绝修订，绝不改写用户 DOCX。
+const escapeXmlText = (text) => String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+const unescapeXmlText = (text) => String(text || '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+
+const revisionElementText = (elementXml) => (String(elementXml || '')
+    .match(/<w:(?:t|delText)\b[^>]*>[\s\S]*?<\/w:(?:t|delText)>/g) || [])
+    .map((node) => unescapeXmlText(node.replace(/^<w:(?:t|delText)\b[^>]*>|<\/w:(?:t|delText)>$/g, '')))
+    .join('');
+
+const revisionAuthors = (paragraphXml) => [...new Set(
+    (String(paragraphXml || '').match(/<w:(?:ins|del)\b[^>]*>/g) || [])
+        .map((tag) => unescapeXmlText(
+            tag.match(/\bw:author=(?:"([^"]*)"|'([^']*)')/)?.slice(1).find(Boolean) || '',
+        ))
+        .filter(Boolean),
+)];
+
+// 保留“拒绝全部修订”视图作为复合审核输入的一部分；操作只发生在
+// 内存副本中，绝不改写用户 DOCX。
 const rejectTrackedChangesInXml = (xml) => {
     let result = removeElements(xml, ['ins', 'moveTo', 'conflictIns']);
     result = unwrapElements(result, ['del', 'moveFrom', 'conflictDel'])
@@ -87,13 +112,63 @@ const rejectTrackedChangesInXml = (xml) => {
     return result;
 };
 
+const acceptTrackedChangesInXml = (xml) => {
+    let result = removeElements(xml, ['del', 'moveFrom', 'conflictDel']);
+    result = unwrapElements(result, ['ins', 'moveTo', 'conflictIns']);
+    result = removeElements(result, [
+        'rPrChange', 'pPrChange', 'tblPrChange', 'tblPrExChange', 'tblGridChange',
+        'trPrChange', 'tcPrChange', 'sectPrChange', 'numberingChange',
+        'customXmlInsRangeStart', 'customXmlInsRangeEnd',
+        'customXmlDelRangeStart', 'customXmlDelRangeEnd',
+        'moveFromRangeStart', 'moveFromRangeEnd', 'moveToRangeStart', 'moveToRangeEnd',
+    ]);
+    return result;
+};
+
+const plainParagraphText = (paragraphXml) => (
+    (String(paragraphXml || '').match(/<w:t\b[^>]*>[\s\S]*?<\/w:t>/g) || [])
+        .map(revisionElementText)
+        .join('')
+);
+
+/**
+ * Build a review-only text view in which every pending revision paragraph is
+ * shown twice: the rejected/original view and the accepted/proposed view.
+ * This operates only on an in-memory OOXML copy.
+ */
+const materializeTrackedReviewParagraphsInXml = (xml) => String(xml || '').replace(
+    /<w:p\b[^>]*>[\s\S]*?<\/w:p>/g,
+    (paragraphXml) => {
+        if (!/<w:(?:ins|del|moveTo|moveFrom|conflictIns|conflictDel)\b/.test(paragraphXml)) {
+            return paragraphXml;
+        }
+        const baselineText = plainParagraphText(rejectTrackedChangesInXml(paragraphXml)).trim();
+        const proposedText = plainParagraphText(acceptTrackedChangesInXml(paragraphXml)).trim();
+        if (!baselineText && !proposedText) return paragraphXml;
+        const startTag = paragraphXml.match(/^<w:p\b[^>]*>/)?.[0] || '<w:p>';
+        const pPr = paragraphXml.match(/<w:pPr\b[\s\S]*?<\/w:pPr>/)?.[0] || '';
+        const authorText = revisionAuthors(paragraphXml).join('、');
+        const proposedLabel = authorText
+            ? `【已有修订意见（${authorText}）】`
+            : '【已有修订意见】';
+        return [
+            startTag,
+            pPr,
+            `<w:r><w:t>${escapeXmlText(`【修订前原文】${baselineText}`)}</w:t></w:r>`,
+            '<w:r><w:br/></w:r>',
+            `<w:r><w:t>${escapeXmlText(`${proposedLabel}${proposedText}`)}</w:t></w:r>`,
+            '</w:p>',
+        ].join('');
+    },
+);
+
 const extractDocxReviewBaseline = async (filePath) => {
     const zip = new AdmZip(filePath);
     const entry = zip.getEntry('word/document.xml');
     if (entry) {
         const xml = entry.getData().toString('utf8');
-        const baselineXml = rejectTrackedChangesInXml(xml);
-        if (baselineXml !== xml) zip.updateFile(entry.entryName, Buffer.from(baselineXml, 'utf8'));
+        const reviewXml = materializeTrackedReviewParagraphsInXml(xml);
+        if (reviewXml !== xml) zip.updateFile(entry.entryName, Buffer.from(reviewXml, 'utf8'));
     }
     const { value } = await mammoth.extractRawText({ buffer: zip.toBuffer() });
     return value;
@@ -142,6 +217,8 @@ module.exports = {
     getOcrSidecarPath,
     readOcrSidecar,
     rejectTrackedChangesInXml,
+    acceptTrackedChangesInXml,
+    materializeTrackedReviewParagraphsInXml,
     extractDocxReviewBaseline,
     extractTextFromFile,
     CONTRACT_CONTENT_BEGIN,
