@@ -183,6 +183,36 @@ test('终审合并重复根风险并拒绝不成立风险', () => {
     ]);
 });
 
+test('终审合并保持一个可原子写入的修订计划', () => {
+    const makeIssue = (id, changes) => ({
+        issue_id: id,
+        finding: { issue_id: id, title: id, severity: 'medium', basis: [], related_clauses: [] },
+        suggestion: { issue_id: id, severity: 'medium', basis: [], linked_changes: changes },
+    });
+    const output = applyHolisticAdjudication([
+        makeIssue('payment', [
+            { clause_id: '1.4', operation: 'replace', current_clause: '完整的服务功能条款', suggested_text: '完整修改' },
+            { clause_id: '2.2', operation: 'replace', current_clause: '付款条款', suggested_text: '分期付款' },
+        ]),
+        makeIssue('attachment', [
+            { clause_id: '1.4', operation: 'replace', current_clause: '服务功能', suggested_text: '短范围修改' },
+            { clause_id: '10.3', operation: 'append', current_clause: '合同未约定', suggested_text: '新增附件条款' },
+        ]),
+    ], {
+        decisions: [
+            { issue_id: 'payment', decision: 'keep' },
+            { issue_id: 'attachment', decision: 'merge', merge_into: 'payment' },
+        ],
+    });
+
+    assert.equal(output.length, 1);
+    assert.deepEqual(output[0].suggestion.linked_changes.map((item) => item.current_clause), [
+        '完整的服务功能条款',
+        '付款条款',
+    ]);
+    assert.equal(output[0].suggestion.linked_changes.every((item) => item.operation === 'replace'), true);
+});
+
 test('证据核验拒绝与修订锚点失败均保留明确原因', () => {
     const plan = normalizeHolisticPlan({
         candidate_issues: [

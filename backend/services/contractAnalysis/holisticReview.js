@@ -247,6 +247,26 @@ const dedupeChanges = (changes) => {
         const key = compact(`${item.operation}|${item.current_clause}|${item.existing_revision_text || ''}`);
         if (!key || seen.has(key)) continue;
         seen.add(key);
+        if (item.operation === 'append' && changes.some((candidate) => candidate?.operation !== 'append')) {
+            // A merged root issue must remain one atomic review operation. When
+            // the same protection can already be expressed through located
+            // replacements, do not mix an unanchored append lifecycle into it.
+            continue;
+        }
+        const clauseId = compact(item.clause_id || '');
+        const currentClause = compact(item.current_clause || item.original_text || '');
+        const overlappingIndex = output.findIndex((candidate) => {
+            if (candidate.operation !== item.operation) return false;
+            if (clauseId && compact(candidate.clause_id || '') !== clauseId) return false;
+            const existingClause = compact(candidate.current_clause || candidate.original_text || '');
+            return currentClause && existingClause
+                && (currentClause.includes(existingClause) || existingClause.includes(currentClause));
+        });
+        if (overlappingIndex >= 0) {
+            const existingClause = compact(output[overlappingIndex].current_clause || output[overlappingIndex].original_text || '');
+            if (currentClause.length > existingClause.length) output[overlappingIndex] = item;
+            continue;
+        }
         output.push(item);
     }
     return output;
