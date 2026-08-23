@@ -27,8 +27,9 @@ export function useReviewSession(state, deps) {
             Object.assign(contract, contractData.contract);
             setupSocket(contract.id);
             Object.assign(preAnalysisData, contractData.preAnalysisData || {});
+            const workflowStatus = String(contractData.workflowStatus || contractData.contract?.status || '').toLowerCase();
             const normalizedStatus = String(contractData.analysisStatus || '').toLowerCase();
-            activeStep.value = normalizedStatus === 'pre_analyzed' ? 1 : 2;
+            activeStep.value = workflowStatus === 'preanalyzed' || normalizedStatus === 'pre_analyzed' ? 1 : 2;
             perspective.value = contractData.perspective || resolveRecommendedPerspective(preAnalysisData);
             selectedTemplateId.value = preAnalysisData.template_id || '';
             allSuggestedReviewPoints.value = contractData.preAnalysisData?.suggested_review_points || [];

@@ -46,6 +46,7 @@ module.exports = function (router) {
                 },
                 preAnalysisData,
                 reviewData,
+                workflowStatus: contractRecord.status,
                 analysisStatus: contractRecord.analysis_status,
                 perspective: contractRecord.perspective,
                 selectedReviewPoints: preAnalysisData.reviewPoints || preAnalysisData.suggested_review_points || [],
