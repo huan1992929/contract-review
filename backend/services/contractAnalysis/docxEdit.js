@@ -537,7 +537,9 @@ const pairedWholeParagraphBookmarks = (paragraphXml, range, textLength) => {
             ],
         };
     }
-    if (!balanced || crossesReplacementBoundary) throw new Error('DOCX_COMPLEX_PARAGRAPH_UNSUPPORTED');
+    if (!uniqueStarts || !uniqueEnds || crossesReplacementBoundary) {
+        throw new Error('DOCX_COMPLEX_PARAGRAPH_UNSUPPORTED');
+    }
     return { starts, ends, events };
 };
 
@@ -1736,10 +1738,9 @@ const planTextReplacementsInDocumentXml = (sourceXml, replacements = []) => {
         }
     }
 
-    // Phase 3: fail closed for same-paragraph batches. Overlapping ranges get
-    // their own error; disjoint edits are also deferred until a paragraph-level
-    // merge strategy is available, instead of being misreported as a complex
-    // paragraph after the first write.
+    // Phase 3: overlapping ranges always fail. Disjoint changes from the same
+    // root suggestion may be merged into one paragraph-level revision group;
+    // separate root risks remain independent and therefore fail closed.
     const planned = states.filter((state) => state.plan);
     const batchConflicts = new Map();
     for (let leftIndex = 0; leftIndex < planned.length; leftIndex += 1) {
@@ -1750,6 +1751,9 @@ const planTextReplacementsInDocumentXml = (sourceXml, replacements = []) => {
             const leftRange = left.plan.resolved.range;
             const rightRange = right.plan.resolved.range;
             const overlap = leftRange.start < rightRange.end && rightRange.start < leftRange.end;
+            const sameSuggestion = String(left.item?.options?.suggestionId || '')
+                === String(right.item?.options?.suggestionId || '');
+            if (!overlap && sameSuggestion) continue;
             const code = overlap ? 'DOCX_BATCH_RANGE_OVERLAP' : 'DOCX_BATCH_SAME_PARAGRAPH_UNSUPPORTED';
             for (const state of [left, right]) {
                 const existing = batchConflicts.get(state.index);
@@ -1816,10 +1820,55 @@ const replaceTextsInDocxAtomic = (filePath, replacements = []) => {
     let nextRevisionId = Math.max(0, ...(documentXml.match(/w:id="(\d+)"/g) || [])
         .map((value) => Number(value.match(/\d+/)?.[0] || 0))) + 1;
     const results = [];
-    const orderedStates = [...planning.states].sort((left, right) => (
-        right.plan.resolved.paragraph.start - left.plan.resolved.paragraph.start
+    const paragraphGroups = new Map();
+    for (const state of planning.states) {
+        const key = state.plan.resolved.paragraph.start;
+        paragraphGroups.set(key, [...(paragraphGroups.get(key) || []), state]);
+    }
+    const orderedGroups = [...paragraphGroups.values()].sort((left, right) => (
+        right[0].plan.resolved.paragraph.start - left[0].plan.resolved.paragraph.start
     ));
-    for (const state of orderedStates) {
+    for (const group of orderedGroups) {
+        if (group.length > 1) {
+            const baseline = group[0].plan.resolved.paragraph;
+            let mergedText = baseline.text;
+            for (const state of [...group].sort((left, right) => (
+                right.plan.resolved.range.start - left.plan.resolved.range.start
+            ))) {
+                const { range, replacement } = state.plan.resolved;
+                mergedText = `${mergedText.slice(0, range.start)}${replacement}${mergedText.slice(range.end)}`;
+            }
+            const primary = group[0];
+            const revisionOptions = {
+                revisionId: nextRevisionId,
+                author: primary.item.options.author,
+                date: primary.item.options.date,
+                revisionGroupId: primary.item.options.revisionGroupId,
+                suggestionId: primary.item.options.suggestionId,
+            };
+            const revisionResult = replaceTextWithRevisionGroup(
+                baseline.xml, { start: 0, end: baseline.text.length }, mergedText, revisionOptions,
+            );
+            documentXml = `${documentXml.slice(0, baseline.start)}${revisionResult.xml}${documentXml.slice(baseline.end)}`;
+            nextRevisionId += 2;
+            for (const [groupIndex, state] of group.entries()) {
+                const { resolved } = state.plan;
+                results.push({
+                    index: state.index,
+                    ...state.identity,
+                    ok: true,
+                    replacements: 1,
+                    clauseNo: resolved.clauseNo,
+                    matchedText: resolved.matchedText,
+                    replacementText: resolved.replacement,
+                    strategy: 'same-paragraph-merged',
+                    revisionGroup: groupIndex === 0 ? revisionResult.revisionGroup : null,
+                    sharedRevisionGroupId: revisionResult.revisionGroup.group_id,
+                });
+            }
+            continue;
+        }
+        const state = group[0];
         const { item, plan, identity, index } = state;
         const resolved = plan.resolved;
         let paragraphXml;

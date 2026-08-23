@@ -437,7 +437,7 @@ test('successful batch writes all revision groups in one readable DOCX', () => {
     }
 });
 
-test('batch preflight detects overlapping and same-paragraph edits before writing', () => {
+test('batch preflight merges disjoint same-root paragraph edits and rejects separate roots', () => {
     const paragraph = '4.1 甲方应在30日内付款，乙方应在5日内开具发票。';
     const documentXml = makeDocumentXml(`<w:p><w:r><w:t>${paragraph}</w:t></w:r></w:p>`);
     const overlap = preflightTextReplacementsInDocumentXml(documentXml, [
@@ -459,16 +459,27 @@ test('batch preflight detects overlapping and same-paragraph edits before writin
         {
             originalText: '甲方应在30日内付款',
             suggestedText: '甲方应在15日内付款',
-            options: { mode: 'review', revisionGroupId: 'disjoint-1' },
+            options: { mode: 'review', revisionGroupId: 'disjoint-1', suggestionId: 'same-root' },
         },
         {
             originalText: '乙方应在5日内开具发票',
             suggestedText: '乙方应在3日内开具发票',
-            options: { mode: 'review', revisionGroupId: 'disjoint-2' },
+            options: { mode: 'review', revisionGroupId: 'disjoint-2', suggestionId: 'same-root' },
         },
     ]);
-    assert.equal(disjoint.results[0].code, 'DOCX_BATCH_SAME_PARAGRAPH_UNSUPPORTED');
-    assert.equal(disjoint.results[1].code, 'DOCX_BATCH_SAME_PARAGRAPH_UNSUPPORTED');
+    assert.equal(disjoint.results[0].code, 'REVISION_SAFE_NEW');
+    assert.equal(disjoint.results[1].code, 'REVISION_SAFE_NEW');
+
+    const separateRoots = preflightTextReplacementsInDocumentXml(documentXml, [
+        ['甲方应在30日内付款', '甲方应在15日内付款', 'root-a'],
+        ['乙方应在5日内开具发票', '乙方应在3日内开具发票', 'root-b'],
+    ].map(([originalText, suggestedText, suggestionId]) => ({
+        originalText,
+        suggestedText,
+        options: { mode: 'review', revisionGroupId: suggestionId, suggestionId },
+    })));
+    assert.equal(separateRoots.results[0].code, 'DOCX_BATCH_SAME_PARAGRAPH_UNSUPPORTED');
+    assert.equal(separateRoots.results[1].code, 'DOCX_BATCH_SAME_PARAGRAPH_UNSUPPORTED');
 
     const threeWay = preflightTextReplacementsInDocumentXml(documentXml, [
         ['甲方应在30日内付款', '甲方应在15日内付款'],
@@ -482,6 +493,35 @@ test('batch preflight detects overlapping and same-paragraph edits before writin
     assert.equal(threeWay.results.length, 3);
     assert.equal(threeWay.results.every((item) => item.code === 'DOCX_BATCH_RANGE_OVERLAP'), true);
     assert.equal(documentXml, makeDocumentXml(`<w:p><w:r><w:t>${paragraph}</w:t></w:r></w:p>`));
+});
+
+test('atomic batch merges two same-root edits inside a paragraph with a cross-paragraph bookmark start', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'same-paragraph-merge-'));
+    const filePath = path.join(tempDir, 'contract.docx');
+    const paragraph = '3.3 部署完成后甲方进行验收。如整改两次仍不合格，甲方有权解除合同并退款。';
+    try {
+        writeMinimalDocx(filePath, makeDocumentXml([
+            '<w:p><w:bookmarkStart w:id="60" w:name="tp_issue"/>',
+            '<w:r><w:t xml:space="preserve">3.3 </w:t></w:r>',
+            '<w:bookmarkStart w:id="8" w:name="auto_fouce_cross"/>',
+            `<w:r><w:t>${paragraph.slice(4)}</w:t></w:r>`,
+            '<w:bookmarkEnd w:id="60"/></w:p>',
+        ].join('')));
+        const result = replaceTextsInDocxAtomic(filePath, [
+            { originalText: '部署完成后甲方进行验收。', suggestedText: '部署完成后甲方应按书面标准进行验收。', options: { mode: 'review', suggestionId: 'same-root', revisionGroupId: 'merged-group' } },
+            { originalText: '甲方有权解除合同并退款。', suggestedText: '甲方有权解除合同，乙方应限期退款。', options: { mode: 'review', suggestionId: 'same-root', revisionGroupId: 'unused-second-group' } },
+        ]);
+        const xml = new AdmZip(filePath).readAsText('word/document.xml');
+        assert.equal(result.results.length, 2);
+        assert.equal(result.results.filter((item) => item.revisionGroup).length, 1);
+        assert.equal((xml.match(/<w:del\b/g) || []).length, 1);
+        assert.equal((xml.match(/<w:ins\b/g) || []).length, 1);
+        assert.equal((xml.match(/w:id="8"/g) || []).length, 1);
+        assert.match(paragraphText(xml), /书面标准进行验收/);
+        assert.match(paragraphText(xml), /乙方应限期退款/);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
 });
 
 test('atomic batch supersedes an existing pending group and writes another paragraph from one plan', () => {
