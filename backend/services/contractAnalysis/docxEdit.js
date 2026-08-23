@@ -479,6 +479,27 @@ const replaceTextWithRevision = (paragraphXml, range, replacement, options = {})
     return replaceTextWithRevisionGroup(paragraphXml, range, replacement, options).xml;
 };
 
+const pairedWholeParagraphBookmarks = (paragraphXml, range, textLength) => {
+    const starts = String(paragraphXml || '').match(/<w:bookmarkStart\b[^>]*\/>/g) || [];
+    const ends = String(paragraphXml || '').match(/<w:bookmarkEnd\b[^>]*\/>/g) || [];
+    if (!starts.length && !ends.length) return { starts: [], ends: [] };
+
+    const wholeParagraph = range?.start === 0 && range?.end === textLength;
+    const bookmarkId = (tag) => tag.match(/\bw:id=(?:"([^"]+)"|'([^']+)')/)?.slice(1).find(Boolean) || '';
+    const startIds = starts.map(bookmarkId);
+    const endIds = ends.map(bookmarkId);
+    const balanced = startIds.length === endIds.length
+        && startIds.every((id) => id && startIds.filter((candidate) => candidate === id).length === 1)
+        && endIds.every((id) => id && endIds.filter((candidate) => candidate === id).length === 1)
+        && startIds.every((id) => endIds.includes(id));
+
+    // A complete paragraph replacement may safely retain locally paired
+    // navigation/risk bookmarks by expanding their range over the new tracked
+    // revision. Partial or cross-paragraph bookmarks remain fail-closed.
+    if (!wholeParagraph || !balanced) throw new Error('DOCX_COMPLEX_PARAGRAPH_UNSUPPORTED');
+    return { starts, ends };
+};
+
 /**
  * Build one logical AI suggestion as a stable Word revision group.
  *
@@ -487,10 +508,11 @@ const replaceTextWithRevision = (paragraphXml, range, replacement, options = {})
  * later accept/reject both halves as one atomic operation.
  */
 const replaceTextWithRevisionGroup = (paragraphXml, range, replacement, options = {}) => {
-    if (/<w:(?:hyperlink|fldChar|instrText|bookmarkStart|commentRangeStart|ins|del)\b/.test(paragraphXml)) {
+    if (/<w:(?:hyperlink|fldChar|instrText|commentRangeStart|commentRangeEnd|commentReference|ins|del)\b/.test(paragraphXml)) {
         throw new Error('DOCX_COMPLEX_PARAGRAPH_UNSUPPORTED');
     }
     const text = paragraphText(paragraphXml);
+    const bookmarks = pairedWholeParagraphBookmarks(paragraphXml, range, text.length);
     const oldText = text.slice(range.start, range.end);
     const startTag = paragraphXml.match(/^<w:p\b[^>]*>/)?.[0] || '<w:p>';
     const pPr = paragraphXml.match(/<w:pPr\b[\s\S]*?<\/w:pPr>/)?.[0] || '';
@@ -509,7 +531,7 @@ const replaceTextWithRevisionGroup = (paragraphXml, range, replacement, options 
         ? `<w:ins w:id="${id + 1}" w:author="${author}" w:date="${date}">${makeRun(replacement, runProperties)}</w:ins>`
         : '';
     return {
-        xml: `${startTag}${pPr}${makeRun(before, runProperties)}${deleted}${inserted}${makeRun(after, runProperties)}</w:p>`,
+        xml: `${startTag}${pPr}${bookmarks.starts.join('')}${makeRun(before, runProperties)}${deleted}${inserted}${makeRun(after, runProperties)}${bookmarks.ends.join('')}</w:p>`,
         revisionGroup: {
             group_id: groupId,
             suggestion_id: suggestionId,

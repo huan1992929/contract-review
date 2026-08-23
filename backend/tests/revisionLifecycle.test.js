@@ -14,6 +14,7 @@ const {
     detectRevisionGroupStatusInXml,
     syncRevisionGroupsFromDocx,
     resolveParagraphMatch,
+    replaceTextInDocumentXml,
     replaceTextInDocx,
     replaceTextsInDocxAtomic,
 } = require('../services/contractAnalysis/docxEdit');
@@ -118,6 +119,51 @@ test('complete ordinary payment paragraph can expand into a longer single-paragr
     } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
+});
+
+test('whole-paragraph review revision preserves paired navigation and risk bookmarks', () => {
+    const original = '1.4 本服务的具体功能与性能以本协议附件载明的服务功能清单为准，乙方有权对产品功能进行优化、迭代。';
+    const suggested = '1.4 本服务的具体功能与性能以本协议附件《服务功能清单》为准，该附件经双方盖章或授权代表签字后作为本协议组成部分。乙方有权对产品功能进行优化、迭代，但不得实质性减损附件所列核心功能；涉及核心功能调整的，应提前书面通知甲方并获得甲方书面确认。';
+    const paragraph = [
+        '<w:p w14:paraId="51068C89"><w:pPr><w:spacing w:after="120"/></w:pPr>',
+        '<w:bookmarkStart w:id="36" w:name="tp_issue_d325535d75c74ad68bc503d6"/>',
+        '<w:bookmarkStart w:id="35" w:name="tp_issue_ad108ff08fa04e229fd37fc1"/>',
+        '<w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">1.4 </w:t></w:r>',
+        '<w:bookmarkStart w:id="3" w:name="auto_fouce_4"/>',
+        '<w:r><w:t>本服务的具体功能与性能以本协议附件载明的服务功能清单为准，乙方有权对产品功能进行优化、迭代。</w:t></w:r>',
+        '<w:bookmarkEnd w:id="3"/><w:bookmarkEnd w:id="35"/><w:bookmarkEnd w:id="36"/></w:p>',
+    ].join('');
+    const documentXml = makeDocumentXml(paragraph);
+    const replaced = replaceTextInDocumentXml(documentXml, original, suggested, [], {
+        mode: 'review',
+        revisionGroupId: 'bookmarked-clause-group',
+        suggestionId: 'bookmarked-clause-suggestion',
+    });
+
+    assert.equal((replaced.xml.match(/<w:bookmarkStart\b/g) || []).length, 3);
+    assert.equal((replaced.xml.match(/<w:bookmarkEnd\b/g) || []).length, 3);
+    assert.equal(replaced.xml.includes('w:name="auto_fouce_4"'), true);
+    assert.equal((replaced.xml.match(/<w:del\b/g) || []).length, 1);
+    assert.equal((replaced.xml.match(/<w:ins\b/g) || []).length, 1);
+
+    const accepted = resolveRevisionGroupInXml(replaced.xml, replaced.revisionGroup, 'accept');
+    assert.equal(paragraphText(accepted.xml), suggested);
+});
+
+test('target paragraphs with comments or pending revisions remain protected', () => {
+    const original = '2.2 甲方应在签署后支付全部费用。';
+    const suggested = '2.2 甲方应在验收合格后支付全部费用。';
+    const commentParagraph = `<w:p><w:commentRangeStart w:id="7"/><w:r><w:t>${original}</w:t></w:r><w:commentRangeEnd w:id="7"/></w:p>`;
+    const revisionParagraph = `<w:p><w:ins w:id="8" w:author="用户"><w:r><w:t>${original}</w:t></w:r></w:ins></w:p>`;
+
+    assert.throws(
+        () => replaceTextInDocumentXml(makeDocumentXml(commentParagraph), original, suggested, [], { mode: 'review' }),
+        /DOCX_COMPLEX_PARAGRAPH_UNSUPPORTED/,
+    );
+    assert.throws(
+        () => replaceTextInDocumentXml(makeDocumentXml(revisionParagraph), original, suggested, [], { mode: 'review' }),
+        /DOCX_COMPLEX_PARAGRAPH_UNSUPPORTED/,
+    );
 });
 
 test('multi-paragraph replacement fails closed instead of flattening lines into one paragraph', () => {
