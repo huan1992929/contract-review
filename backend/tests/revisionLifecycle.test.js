@@ -186,6 +186,54 @@ test('preflight classifies clean, human-conflict and unlinked system-revision ta
     }).status, 'needs_new_round');
 });
 
+test('table label and truncated value anchor resolves uniquely to the complete value cell', () => {
+    const main = '方案生成套数以乙方系统后台的生成记录为准,甲方可随时查询。';
+    const value = '以乙方系统后台的方案生成记录为准(「一套方案」计量口径见本协议第 2.3.5 条;生成失败或系统异常不计数)';
+    const documentXml = makeDocumentXml([
+        `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/></w:numPr></w:pPr><w:r><w:t>${main}</w:t></w:r></w:p>`,
+        '<w:tbl><w:tr>',
+        '<w:tc><w:p><w:r><w:t>计量依据</w:t></w:r></w:p></w:tc>',
+        `<w:tc><w:p><w:r><w:t>${value}</w:t></w:r></w:p></w:tc>`,
+        '</w:tr></w:tbl>',
+    ].join(''));
+    const tableOriginal = '计量依据:以乙方系统后台的方案生成记录为准';
+    const tableSuggested = '计量依据:以乙方系统后台记录与双方核对记录为准。';
+    const preflight = preflightTextReplacementsInDocumentXml(documentXml, [
+        { originalText: main, suggestedText: `${main.slice(0, -1)}，乙方应提供查询明细。` },
+        { originalText: tableOriginal, suggestedText: tableSuggested },
+    ]);
+    assert.equal(preflight.results.every((item) => item.status === 'safe_new'), true);
+    assert.equal(preflight.results[1].code, 'REVISION_SAFE_NEW');
+    assert.equal(preflight.results[1].matchedText, value);
+    assert.equal(preflight.results[1].replacementText, '以乙方系统后台记录与双方核对记录为准。');
+
+    const replaced = replaceTextInDocumentXml(
+        documentXml, tableOriginal, tableSuggested, [], { mode: 'review', author: 'AI审查' },
+    );
+    assert.equal(replaced.strategy, 'table-label-value');
+    assert.equal(replaced.matchedText, value);
+    assert.equal(replaced.replacementText, '以乙方系统后台记录与双方核对记录为准。');
+    assert.match(paragraphText(replaced.xml), /计量依据/);
+    assert.doesNotMatch(paragraphText(replaced.xml), /计量依据:计量依据/);
+});
+
+test('duplicate table label and value rows remain ambiguous and fail closed', () => {
+    const row = [
+        '<w:tr>',
+        '<w:tc><w:p><w:r><w:t>计量依据</w:t></w:r></w:p></w:tc>',
+        '<w:tc><w:p><w:r><w:t>以乙方系统后台的方案生成记录为准，并保留核对日志。</w:t></w:r></w:p></w:tc>',
+        '</w:tr>',
+    ].join('');
+    const documentXml = makeDocumentXml(`<w:tbl>${row}${row}</w:tbl>`);
+    const result = preflightTextReplacementInDocumentXml(
+        documentXml,
+        '计量依据:以乙方系统后台的方案生成记录为准',
+        '计量依据:以双方核对记录为准。',
+    );
+    assert.equal(result.status, 'unsupported');
+    assert.equal(result.code, 'DOCX_TEXT_MATCH_AMBIGUOUS');
+});
+
 test('multi-paragraph replacement fails closed instead of flattening lines into one paragraph', () => {
     const documentXml = makeDocumentXml('<w:p><w:r><w:t>1.1 原条款。</w:t></w:r></w:p>');
     assert.throws(

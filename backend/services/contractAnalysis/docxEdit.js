@@ -1017,6 +1017,70 @@ const stripReplacementInstructionPrefix = (text) => String(text || '').trim().re
 
 const withoutTerminalPunctuation = (text) => String(text || '').trim().replace(/[。；;，,！!？?：:]+$/u, '');
 
+const splitTableLabelValue = (text) => {
+    const match = String(text || '').trim().match(/^([^：:\r\n]{1,40})\s*[：:]\s*(.{8,})$/su);
+    return match ? { label: match[1].trim(), value: match[2].trim() } : null;
+};
+
+const resolveTableLabelValueMatches = (documentXml, paragraphs, candidates, suggestedText) => {
+    const matches = [];
+    const rowPattern = /<w:tr\b[^>]*>[\s\S]*?<\/w:tr>/g;
+    let rowMatch;
+    while ((rowMatch = rowPattern.exec(documentXml)) !== null) {
+        const rowStart = rowMatch.index;
+        const cells = [];
+        const cellPattern = /<w:tc\b[^>]*>[\s\S]*?<\/w:tc>/g;
+        let cellMatch;
+        while ((cellMatch = cellPattern.exec(rowMatch[0])) !== null) {
+            const start = rowStart + cellMatch.index;
+            const end = start + cellMatch[0].length;
+            cells.push({
+                start,
+                end,
+                paragraphs: paragraphs.filter((paragraph) => (
+                    paragraph.start >= start && paragraph.end <= end && paragraph.text.trim()
+                )),
+            });
+        }
+        for (const candidate of candidates) {
+            const pair = splitTableLabelValue(candidate);
+            if (!pair) continue;
+            const normalizedLabel = normalizeForDocxMatch(pair.label).value;
+            const normalizedValue = normalizeForDocxMatch(pair.value).value;
+            if (normalizedValue.length < 8) continue;
+            for (let index = 0; index < cells.length - 1; index += 1) {
+                const labelCell = cells[index];
+                const valueCell = cells[index + 1];
+                const labelText = labelCell.paragraphs.map((paragraph) => paragraph.text).join('').trim();
+                if (normalizeForDocxMatch(labelText).value !== normalizedLabel) continue;
+                // Only a single value paragraph is safe to replace. Multi-
+                // paragraph cells require a structured table edit plan.
+                if (valueCell.paragraphs.length !== 1) continue;
+                const paragraph = valueCell.paragraphs[0];
+                const range = findDocxTextRange(paragraph.text, pair.value);
+                if (!range || range.start !== 0) continue;
+                const replacementPair = splitTableLabelValue(stripReplacementInstructionPrefix(suggestedText));
+                const replacement = replacementPair
+                    && normalizeForDocxMatch(replacementPair.label).value === normalizedLabel
+                    ? replacementPair.value
+                    : stripReplacementInstructionPrefix(suggestedText);
+                matches.push({
+                    paragraphIndex: paragraphs.indexOf(paragraph),
+                    paragraph,
+                    range: { start: 0, end: paragraph.text.length },
+                    matchedText: paragraph.text,
+                    replacement,
+                    clauseNo: '',
+                    strategy: 'table-label-value',
+                    tableLabel: labelText,
+                });
+            }
+            if (matches.length) break;
+        }
+    }
+    return matches;
+};
+
 const coversWholeParagraphIgnoringTerminalPunctuation = (paragraphTextValue, needle) => {
     const paragraph = normalizeForDocxMatch(withoutTerminalPunctuation(paragraphTextValue)).value;
     const candidate = normalizeForDocxMatch(withoutTerminalPunctuation(needle)).value;
@@ -1138,6 +1202,9 @@ const resolveParagraphMatch = (documentXml, originalText, suggestedText, origina
     };
     let matches = findMatches(false);
     if (!matches.length) matches = findMatches(true);
+    if (!matches.length) {
+        matches = resolveTableLabelValueMatches(documentXml, paragraphs, candidates, suggestedText);
+    }
     if (!matches.length) {
         const joinedParagraphs = normalizeForDocxMatch(paragraphs.map((paragraph) => paragraph.text).join('')).value;
         const spansParagraphBoundary = candidates.some((candidate) => {

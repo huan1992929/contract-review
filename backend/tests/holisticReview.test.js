@@ -28,6 +28,52 @@ test('全文规划保留跨条款根风险并过滤不存在的锚点', () => {
     ]);
 });
 
+test('全文锚点校验不将相邻表格单元格拼成伪原文', () => {
+    const plainText = [
+        '方案生成套数以乙方系统后台的生成记录为准,甲方可随时查询。',
+        '',
+        '计量依据',
+        '',
+        '以乙方系统后台的方案生成记录为准(「一套方案」计量口径见本协议第 2.3.5 条)',
+    ].join('\n');
+    const plan = normalizeHolisticPlan({
+        candidate_issues: [{
+            title: '计量与查询约定',
+            anchors: [
+                '方案生成套数以乙方系统后台的生成记录为准,甲方可随时查询。',
+                '计量依据:以乙方系统后台的方案生成记录为准',
+            ],
+        }],
+    }, plainText);
+    assert.deepEqual(plan.candidates[0].anchors, [
+        '方案生成套数以乙方系统后台的生成记录为准,甲方可随时查询。',
+    ]);
+
+    const issue = materializeGroundedIssue({
+        candidate: plan.candidates[0],
+        plainText,
+        knowledge: [{ source_type: 'weknora', source_id: 'k-table', law: '思库服务合同模板', content: '计量记录应可核对' }],
+        rawIssue: {
+            accepted: true,
+            basis_refs: [1],
+            changes: [
+                {
+                    operation: 'replace',
+                    current_clause: '方案生成套数以乙方系统后台的生成记录为准,甲方可随时查询。',
+                    suggested_text: '方案生成套数应于每月核对。',
+                },
+                {
+                    operation: 'replace',
+                    current_clause: '计量依据:以乙方系统后台的方案生成记录为准',
+                    suggested_text: '计量依据:以双方核对记录为准',
+                },
+            ],
+        },
+    });
+    assert.ok(issue);
+    assert.equal(issue.suggestion.linked_changes.length, 1);
+});
+
 test('风险级取证形成一个根风险和多个联动修改', () => {
     const plan = normalizeHolisticPlan({
         candidate_issues: [{ title: '付款与验收未联动', anchors: ['2.2 签约后支付全部款项。'] }],

@@ -14,6 +14,11 @@ const MAX_GROUNDED_ISSUES = 12;
 const asArray = (value) => (Array.isArray(value) ? value : []);
 const compact = (value) => String(value || '').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
 
+const contractTextBlocks = (plainText) => String(plainText || '')
+    .split(/[\r\n\t]+/u)
+    .map(compact)
+    .filter(Boolean);
+
 const stableIssueId = (title, anchors = []) => {
     const payload = `${compact(title)}|${anchors.map(compact).filter(Boolean).sort().join('|')}`;
     return `tp-holistic-${crypto.createHash('sha256').update(payload).digest('hex').slice(0, 16)}`;
@@ -21,7 +26,12 @@ const stableIssueId = (title, anchors = []) => {
 
 const anchoredInContract = (text, plainText) => {
     const anchor = compact(text);
-    return anchor.length >= 6 && compact(plainText).includes(anchor);
+    if (anchor.length < 6) return false;
+    // Mammoth separates DOCX paragraphs and table cells with line breaks. Do
+    // not remove those structural boundaries before validating an AI anchor:
+    // otherwise a fabricated "label:value" can match two adjacent cells and
+    // survive until the paragraph-level writer correctly rejects it.
+    return contractTextBlocks(plainText).some((block) => block.includes(anchor));
 };
 
 const normalizeSeverity = (value) => {
