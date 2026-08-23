@@ -662,10 +662,9 @@ export function useReviewEditor(state, helpers) {
         if (!contract.id || forceSaveInFlight.value) return false;
         forceSaveInFlight.value = true;
         try {
-            const editor = getEditor();
-            if (typeof editor?.serviceCommand === 'function') {
-                editor.serviceCommand('forcesave', {});
-            }
+            // The backend command service is the single authoritative save
+            // trigger. Calling the host wrapper as well races two force-save
+            // commands and can turn the second request into a false failure.
             const response = await api.forceSaveContract(contract.id, {
                 documentKey: contract.editorConfig?.document?.key,
             });

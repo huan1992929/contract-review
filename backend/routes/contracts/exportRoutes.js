@@ -20,7 +20,11 @@ const db = require('../../database');
 const path = require('path');
 const { requireRequestUserId, findOwnedContract } = require('../../services/contractAnalysis/auth');
 const { parseJsonField, renderReviewReportHtml, generateDocxBuffer, streamReviewReportPdf } = require('../../services/contractAnalysis/reportRendering');
-const { postOnlyOfficeCommand, buildOnlyOfficeConfig } = require('../../services/contractAnalysis/onlyoffice');
+const {
+    postOnlyOfficeCommand,
+    buildOnlyOfficeConfig,
+    classifyForceSaveResult,
+} = require('../../services/contractAnalysis/onlyoffice');
 const {
     EXPORT_VARIANTS,
     EXPORT_FORMATS,
@@ -170,7 +174,19 @@ module.exports = function (router) {
                 key,
             });
 
-            if (result?.error && result.error !== 0) {
+            const forceSaveState = classifyForceSaveResult(result);
+            if (forceSaveState === 'no_changes') {
+                return res.json({
+                    ok: true,
+                    saved: true,
+                    noChanges: true,
+                    documentKey: key,
+                    ossSha256: contract.oss_sha256 || '',
+                    result,
+                });
+            }
+
+            if (forceSaveState === 'failed') {
                 return res.status(502).json({ error: `OnlyOffice force-save failed: ${result.error}`, result });
             }
 

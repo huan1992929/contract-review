@@ -11,6 +11,7 @@ const {
     buildOnlyOfficeConfig,
     normalizeOnlyOfficeDownloadUrl,
     verifyOnlyOfficeCallback,
+    classifyForceSaveResult,
 } = require('../services/contractAnalysis/onlyoffice');
 const {
     paragraphText,
@@ -58,6 +59,27 @@ test('ONLYOFFICE review mode tracks changes without opening the review navigator
     assert.equal(reviewConfig.editorConfig.customization.review.trackChanges, true);
     assert.equal(reviewConfig.editorConfig.customization.review.showReviewChanges, false);
     assert.equal(editConfig.editorConfig.customization.review.trackChanges, false);
+});
+
+test('ONLYOFFICE force-save treats error 4 as a safe no-change result', () => {
+    assert.equal(classifyForceSaveResult({ error: 0 }), 'callback_pending');
+    assert.equal(classifyForceSaveResult({ error: 4 }), 'no_changes');
+    assert.equal(classifyForceSaveResult({ error: 1 }), 'failed');
+    assert.equal(classifyForceSaveResult({ error: 6 }), 'failed');
+});
+
+test('review actions use only the backend force-save command and accept saved no-change acknowledgements', () => {
+    const source = fs.readFileSync(
+        path.join(__dirname, '../../frontend/src/composables/useReviewEditor.js'),
+        'utf8',
+    );
+    const start = source.indexOf('const forceSaveCurrentDocument');
+    const end = source.indexOf('const scheduleForceSave', start);
+    const forceSave = source.slice(start, end);
+    assert.ok(start >= 0 && end > start);
+    assert.match(forceSave, /api\.forceSaveContract/);
+    assert.match(forceSave, /response\.data\?\.saved/);
+    assert.doesNotMatch(forceSave, /serviceCommand\(['"]forcesave/);
 });
 
 test('server replacement candidates keep authoritative original text ahead of short AI anchors', () => {

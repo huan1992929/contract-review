@@ -128,6 +128,17 @@ const postOnlyOfficeCommand = async (payload) => {
     return response.data;
 };
 
+// ONLYOFFICE command error 4 is a successful no-op for force-save: the
+// document server has no unsaved editor changes to send back.  The source DOCX
+// already owned by the contract service therefore remains authoritative and
+// server-side AI revisions may continue safely.
+const classifyForceSaveResult = (result) => {
+    const errorCode = Number(result?.error ?? 0);
+    if (errorCode === 0) return 'callback_pending';
+    if (errorCode === 4) return 'no_changes';
+    return 'failed';
+};
+
 module.exports = {
     ONLYOFFICE_JWT_SECRET,
     ONLYOFFICE_URL,
@@ -137,4 +148,5 @@ module.exports = {
     verifyOnlyOfficeCallback,
     buildOnlyOfficeConfig,
     postOnlyOfficeCommand,
+    classifyForceSaveResult,
 };
