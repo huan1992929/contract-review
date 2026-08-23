@@ -172,6 +172,11 @@ export function useReviewActions(state, editor, helpers) {
         if (item?._applying || isSuggestionApplied(item)) return;
         const originalText = suggestionOriginal(item);
         const suggestedText = suggestionText(item);
+        const linkedChanges = Array.isArray(item?.linked_changes)
+            ? item.linked_changes.filter((change) => change?.operation !== 'append'
+                && (change?.current_clause || change?.original_text)
+                && change?.suggested_text)
+            : [];
 
         if (!suggestedText || (!originalText && !isMissingClauseSuggestion(item))) {
             ElMessage.warning('该建议缺少可写入合同的建议文本，请手动修改。');
@@ -187,6 +192,46 @@ export function useReviewActions(state, editor, helpers) {
             selectedSuggestionPreview.value.status = status;
             item._applying = false;
         };
+
+        if (linkedChanges.length > 1) {
+            previewSuggestion(item, '正在原子写入关联条款');
+            try {
+                if (!await ensureReviewApplyMode()) throw new Error('EDITOR_REVIEW_MODE_NOT_READY');
+                const saveAck = await forceSaveCurrentDocument(true);
+                if (!saveAck?.saved) throw new Error('ONLYOFFICE_SAVE_NOT_CONFIRMED');
+                const response = await api.batchReplaceContractText(contract.id, {
+                    suggestions: linkedChanges.map((change) => ({
+                        suggestionIndex,
+                        suggestionId: item.revision_group?.suggestion_id || item.suggestion_id || item.id || '',
+                        title: suggestionTitle(item, 0),
+                        originalText: change.current_clause || change.original_text,
+                        suggestedText: change.suggested_text,
+                        originalCandidates: buildReplacementCandidates(
+                            change.current_clause || change.original_text,
+                            change,
+                        ),
+                    })),
+                    mode: reviewApplyMode.value,
+                    expectedDocumentKey: contract.editorConfig?.document?.key,
+                    expectedSha256: contract.confirmedOssSha256 || undefined,
+                });
+                const results = response.data.results || [];
+                item.revision_groups = results.map((result) => result.revisionGroup).filter(Boolean);
+                applyResultToSuggestion(item, originalText, suggestedText, {
+                    ...(results[0] || {}),
+                    applicationStatus: response.data.applicationStatus,
+                });
+                selectedSuggestionPreview.value.status = `已原子写入 ${results.length} 处关联条款，等待统一审阅`;
+                await reloadEditorConfig(response.data.editorConfig, undefined, {
+                    text: results[0]?.replacementText || linkedChanges[0].suggested_text,
+                });
+                item._applying = false;
+            } catch (error) {
+                markFailed(error.response?.data?.error || '关联条款未全部写入，文档保持原状。');
+                ElMessage.error(error.response?.data?.error || '关联条款原子修订失败，未修改合同。');
+            }
+            return;
+        }
 
         if (isMissingClauseSuggestion(item)) {
             previewSuggestion(item, '正在新增条款');

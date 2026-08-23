@@ -30,17 +30,20 @@ const parseAnalysisResult = (contract) => {
     }
 };
 
-const persistRevisionGroup = (analysis, suggestion, revisionGroup, documentKey) => {
-    if (!revisionGroup) return;
-    const storedGroup = {
-        ...revisionGroup,
-        document_key: documentKey,
-    };
-    suggestion.revision_group = storedGroup;
+const persistRevisionGroups = (analysis, suggestion, revisionGroups, documentKey) => {
+    const storedGroups = (Array.isArray(revisionGroups) ? revisionGroups : [revisionGroups])
+        .filter(Boolean)
+        .map((revisionGroup) => ({ ...revisionGroup, document_key: documentKey }));
+    if (!storedGroups.length) return;
+    suggestion.revision_groups = storedGroups;
+    // 保留单组字段兼容历史前端和旧分析结果。
+    suggestion.revision_group = storedGroups[0];
     const registry = Array.isArray(analysis.revision_groups) ? analysis.revision_groups : [];
-    const existingIndex = registry.findIndex((item) => item?.group_id === storedGroup.group_id);
-    if (existingIndex >= 0) registry[existingIndex] = storedGroup;
-    else registry.push(storedGroup);
+    for (const storedGroup of storedGroups) {
+        const existingIndex = registry.findIndex((item) => item?.group_id === storedGroup.group_id);
+        if (existingIndex >= 0) registry[existingIndex] = storedGroup;
+        else registry.push(storedGroup);
+    }
     analysis.revision_groups = registry;
 };
 
@@ -56,7 +59,7 @@ const markSuggestionApplied = (analysis, indexes, mode, documentKey, revisionGro
         item.adopted = mode === 'edit';
         item.applied_at = new Date().toISOString();
         item.applied_document_key = documentKey;
-        persistRevisionGroup(analysis, item, revisionGroups.get(Number(index)), documentKey);
+        persistRevisionGroups(analysis, item, revisionGroups.get(Number(index)), documentKey);
     }
     return analysis;
 };
@@ -360,7 +363,8 @@ module.exports = function (router) {
             const revisionGroups = new Map();
             for (const item of results) {
                 if (item.ok && Number.isInteger(Number(item.suggestionIndex)) && item.revisionGroup) {
-                    revisionGroups.set(Number(item.suggestionIndex), item.revisionGroup);
+                    const index = Number(item.suggestionIndex);
+                    revisionGroups.set(index, [...(revisionGroups.get(index) || []), item.revisionGroup]);
                 }
             }
             await updateContractAfterApply(contract, nextKey, analysis, appliedIndexes, mode, revisionGroups);

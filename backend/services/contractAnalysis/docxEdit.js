@@ -817,33 +817,57 @@ const syncRevisionGroupsFromDocx = (filePath, analysis = {}) => {
     let documentChanged = false;
     for (let index = 0; index < suggestions.length; index += 1) {
         const item = suggestions[index];
-        const group = item?.revision_group;
-        if (!group || !['pending', 'partial', 'pending_review'].includes(group.status || 'pending')) continue;
-        let status = detectRevisionGroupStatusInXml(documentXml, group);
-        if (status === 'partial') {
-            const reconciled = reconcilePartialRevisionGroupInXml(documentXml, group);
-            documentXml = reconciled.xml;
-            status = reconciled.status;
-            documentChanged = documentChanged || reconciled.changed;
+        const groups = Array.isArray(item?.revision_groups) && item.revision_groups.length
+            ? item.revision_groups
+            : (item?.revision_group ? [item.revision_group] : []);
+        if (!groups.length) continue;
+        let groupChanged = false;
+        for (const group of groups) {
+            if (!['pending', 'partial', 'pending_review'].includes(group.status || 'pending')) continue;
+            let status = detectRevisionGroupStatusInXml(documentXml, group);
+            if (status === 'partial') {
+                const reconciled = reconcilePartialRevisionGroupInXml(documentXml, group);
+                documentXml = reconciled.xml;
+                status = reconciled.status;
+                documentChanged = documentChanged || reconciled.changed;
+            }
+            if (status === group.status || (status === 'pending' && group.status === 'pending_review')) continue;
+            group.status = status;
+            group.synced_at = new Date().toISOString();
+            if (Array.isArray(analysis.revision_groups)) {
+                const registered = analysis.revision_groups.find((candidate) => candidate?.group_id === group.group_id);
+                if (registered) Object.assign(registered, group);
+            }
+            groupChanged = true;
         }
-        results.push({ index, suggestionId: group.suggestion_id || '', groupId: group.group_id || '', status });
-        if (status === group.status || (status === 'pending' && group.status === 'pending_review')) continue;
-        group.status = status;
-        group.synced_at = new Date().toISOString();
-        if (Array.isArray(analysis.revision_groups)) {
-            const registered = analysis.revision_groups.find((candidate) => candidate?.group_id === group.group_id);
-            if (registered) Object.assign(registered, group);
-        }
+        const statuses = groups.map((group) => group.status === 'pending_review' ? 'pending' : (group.status || 'pending'));
+        const status = statuses.every((value) => value === 'accepted')
+            ? 'accepted'
+            : (statuses.every((value) => value === 'rejected') ? 'rejected' : 'pending');
+        results.push({
+            index,
+            suggestionId: groups[0].suggestion_id || '',
+            groupId: groups[0].group_id || '',
+            groupIds: groups.map((group) => group.group_id || ''),
+            status,
+        });
+        if (!groupChanged) continue;
+        item.revision_group = groups[0];
+        item.revision_groups = groups;
         if (status === 'accepted') {
             item.application_status = 'applied';
             item.review_pending = false;
             item.adopted = true;
-            item.resolved_at = group.synced_at;
+            item.resolved_at = new Date().toISOString();
         } else if (status === 'rejected') {
             item.application_status = 'rejected';
             item.review_pending = false;
             item.adopted = false;
-            item.resolved_at = group.synced_at;
+            item.resolved_at = new Date().toISOString();
+        } else {
+            item.application_status = 'pending_review';
+            item.review_pending = true;
+            item.adopted = false;
         }
         changed = true;
     }
