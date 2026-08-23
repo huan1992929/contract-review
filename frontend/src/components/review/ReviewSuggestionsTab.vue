@@ -194,9 +194,10 @@
           <h3>确认本次写入范围</h3>
         </div>
       </template>
-      <p class="preflight-intro">已先确认 OnlyOffice 保存，再逐条检查当前 DOCX。只有“可安全新增”和“可更新本轮建议”会进入写入。</p>
+      <p class="preflight-intro">已先确认 OnlyOffice 保存，再逐条检查当前 DOCX。只有“可安全新增”“基于已有修订”和“可更新本轮建议”会进入写入。</p>
       <div class="preflight-grid">
         <article class="preflight-stat is-safe"><strong>{{ batchPreflight.safeNew }}</strong><span>可安全新增</span></article>
+        <article class="preflight-stat is-composite"><strong>{{ batchPreflight.safeComposite }}</strong><span>基于已有修订</span></article>
         <article class="preflight-stat is-supersede"><strong>{{ batchPreflight.safeSupersede }}</strong><span>更新本轮建议</span></article>
         <article class="preflight-stat is-round"><strong>{{ batchPreflight.needsNewRound }}</strong><span>需建立下一轮</span></article>
         <article class="preflight-stat is-conflict"><strong>{{ batchPreflight.humanConflict }}</strong><span>人工/对方修订冲突</span></article>
@@ -256,15 +257,17 @@ export default {
     const isSuggestionResolved = (item) => ['accepted', 'applied'].includes(suggestionApplicationStatus(item));
     const batchPreflight = computed(() => batchPreflightResults.value.reduce((result, item) => {
       if (item.status === 'safe_new') result.safeNew += 1;
+      else if (item.status === 'safe_composite') result.safeComposite += 1;
       else if (item.status === 'safe_supersede') result.safeSupersede += 1;
       else if (item.status === 'needs_new_round') result.needsNewRound += 1;
       else if (item.status === 'human_conflict') result.humanConflict += 1;
       else result.unsupported += 1;
-      result.safe = result.safeNew + result.safeSupersede;
+      result.safe = result.safeNew + result.safeComposite + result.safeSupersede;
       return result;
     }, {
       safe: 0,
       safeNew: 0,
+      safeComposite: 0,
       safeSupersede: 0,
       needsNewRound: 0,
       humanConflict: 0,
@@ -571,11 +574,12 @@ export default {
 .preflight-heading h3 { margin: 0; color: var(--tp-text-primary); font-size: 20px; }
 .preflight-kicker { color: var(--tp-accent); font-size: 10px; font-weight: 800; letter-spacing: .16em; }
 .preflight-intro { margin: 0; color: var(--tp-text-muted); font-size: 13px; line-height: 1.7; }
-.preflight-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 18px; }
+.preflight-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 18px; }
 .preflight-stat { display: grid; gap: 5px; padding: 15px; border: 1px solid var(--tp-line); border-radius: 12px; background: var(--tp-bg-muted); }
 .preflight-stat strong { font-size: 25px; line-height: 1; }
 .preflight-stat span { color: var(--tp-text-muted); font-size: 11px; }
 .preflight-stat.is-safe strong { color: var(--tp-success); }
+.preflight-stat.is-composite strong { color: #20764b; }
 .preflight-stat.is-supersede strong { color: #0f766e; }
 .preflight-stat.is-round strong { color: #8a5b00; }
 .preflight-stat.is-conflict strong,
@@ -588,7 +592,8 @@ export default {
 .preflight-result p { margin: 3px 0 0; color: var(--tp-text-muted); font-size: 11px; line-height: 1.5; }
 .preflight-result p b { color: inherit; }
 .preflight-result.is-safe_new,
-.preflight-result.is-safe_supersede { border-color: #b9dbc9; background: #fbfdfc; }
+.preflight-result.is-safe_supersede,
+.preflight-result.is-safe_composite { border-color: #b9dbc9; background: #fbfdfc; }
 .preflight-result.is-needs_new_round { border-color: #e8c36b; background: #fffdf6; }
 .preflight-result.is-human_conflict,
 .preflight-result.is-unsupported,
