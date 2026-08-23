@@ -36,6 +36,8 @@ const {
     buildStandardComparison,
 } = require('./analysisCore');
 const { analyzeSealAndSignature } = require('./seal');
+const { evaluateBusinessRules, mergeBusinessRuleResults } = require('./businessRuleEngine');
+const { persistInitialRiskLedger } = require('../initialRiskLedger');
 
 // 后台异步执行合同审查（不阻塞 HTTP 响应）
 const runAnalysisInBackground = async (contractId, userId, userPerspective, preAnalysisData) => {
@@ -148,6 +150,13 @@ ${riskItemsText}
         // Step 3.5: 硬性合规检查（规则引擎）
         await emitAnalysisProgress(null, contractId, { step: 'rule_check', status: 'running', message: '正在执行硬性合规检查...' });
         let hardViolations = [];
+        let businessRuleResult = {
+            policy_version: 2,
+            scenarios: [],
+            compliance_findings: [],
+            modification_suggestions: [],
+            audit: { evaluated_count: 0, matched_count: 0, matched_rule_ids: [] },
+        };
         try {
             const externalValues = ruleEngine.loadExternalValues();
             const ruleResult = ruleEngine.runRules(plainText, template.id, externalValues);
@@ -155,7 +164,29 @@ ${riskItemsText}
         } catch (ruleErr) {
             console.warn('[RuleEngine] 规则引擎执行失败:', ruleErr.message);
         }
-        await emitAnalysisProgress(null, contractId, { step: 'rule_check', status: 'completed', message: `硬性合规检查完成，检出 ${hardViolations.length} 项违规。`, partialResult: { hard_violations: hardViolations } });
+        try {
+            businessRuleResult = evaluateBusinessRules({
+                text: plainText,
+                perspective: userPerspective,
+                contractType: preAnalysisData.contract_type,
+                templateId: template.id,
+            });
+        } catch (businessRuleErr) {
+            console.warn('[BusinessRuleEngine] 内部风控规则执行失败:', businessRuleErr.message);
+        }
+        await emitAnalysisProgress(null, contractId, {
+            step: 'rule_check',
+            status: 'completed',
+            message: `硬性合规与内部风控检查完成，检出 ${hardViolations.length + businessRuleResult.compliance_findings.length} 项。`,
+            partialResult: {
+                hard_violations: hardViolations,
+                business_rule_review: {
+                    policy_version: businessRuleResult.policy_version,
+                    scenarios: businessRuleResult.scenarios,
+                    audit: businessRuleResult.audit,
+                },
+            },
+        });
 
         // Step 4: AI 生成审查结论
         await emitAnalysisProgress(null, contractId, { step: 'llm_review', status: 'running', message: 'AI 正在深度审查合同，通常需要 2–5 分钟，请耐心等待...' });
@@ -204,7 +235,10 @@ ${relevantKnowledge.map((item, index) => `[${index + 1}] [${item.source_type}] $
 - 全文禁止输出“风险等级”、高风险、中风险、低风险或同义分级；统一表述为“修改建议”或“待优化项”。
 - 仅复算合同中明确可识别的表格数字或公式；无法可靠读取公式时说明“当前文件解析结果不足以复算”，不得猜测结果。
 - 合同未涉及的业务不得凭空新增审查内容。
-- 规则引擎已检出以下硬性违规（已生成修改建议），请勿在 compliance_findings 中重复列出：${hardViolations.length ? hardViolations.map(v => v.description).join('；') : '无'}
+- 规则引擎已检出以下硬性违规或思库内部风控项（已生成修改建议），请勿在 compliance_findings 中重复列出：${[
+    ...hardViolations.map((item) => item.description),
+    ...businessRuleResult.compliance_findings.map((item) => item.title),
+].join('；') || '无'}
 - 不输出自然语言解释，不输出 markdown。
 
 合同原文：
@@ -319,7 +353,10 @@ ${clauseKnowledge.map((item, index) => `[${index + 1}] [${item.source_type}] ${i
 - 如果没有检索依据，不得编造法条或案例，只能说明"当前知识库未检索到直接依据"。
 - 不得调用或引用外部知识、模型记忆、未提供的境外法规、范本或案例。
 - 全文禁止输出“风险等级”、高风险、中风险、低风险或同义分级；统一表述为“修改建议”或“待优化项”。
-- 规则引擎已检出以下硬性违规（已生成修改建议），请勿在 compliance_findings 中重复列出：${hardViolations.length ? hardViolations.map((v) => v.description).join('；') : '无'}
+- 规则引擎已检出以下硬性违规或思库内部风控项（已生成修改建议），请勿在 compliance_findings 中重复列出：${[
+    ...hardViolations.map((item) => item.description),
+    ...businessRuleResult.compliance_findings.map((item) => item.title),
+].join('；') || '无'}
 - 不输出自然语言解释，不输出 markdown。
 
 当前条款原文：
@@ -359,6 +396,9 @@ ${clause.text}
                 throw new Error('全部合同条款的 AI 审查均未完成。');
             }
         }
+        // 内部法务规则是独立、已批准的风险依据，不受 WeKnora 文本匹配门禁限制。
+        // 优先合并内部规则项，再以稳定 issue_id 去重，确保数量上限可控。
+        analysisResult = mergeBusinessRuleResults(analysisResult, businessRuleResult, 24);
         analysisResult.relevant_laws = await annotateKnowledgeUpdates(relevantKnowledge);
         analysisResult.company_search = companySearchResults;
         if (!analysisResult.company_review.length && companySearchResults.length) {
@@ -424,13 +464,21 @@ ${clause.text}
 
         // Step 6: 保存结果
         await emitAnalysisProgress(null, contractId, { step: 'finalize', status: 'running', message: '正在保存审查结果...' });
-        await db('contracts').where({ id: contractId }).update({
-            status: 'Reviewed',
-            analysis_status: 'reviewed',
-            analysis_result: JSON.stringify(analysisResult),
-            analysis_partial_result: JSON.stringify(analysisResult),
-            pre_analysis_data: JSON.stringify(preAnalysisData),
-            perspective: userPerspective,
+        await db.transaction(async (trx) => {
+            await trx('contracts').where({ id: contractId }).update({
+                status: 'Reviewed',
+                analysis_status: 'reviewed',
+                analysis_result: JSON.stringify(analysisResult),
+                analysis_partial_result: JSON.stringify(analysisResult),
+                pre_analysis_data: JSON.stringify(preAnalysisData),
+                perspective: userPerspective,
+            });
+            await persistInitialRiskLedger({
+                trx,
+                contractId,
+                userId,
+                analysisResult,
+            });
         });
 
         updateAnalysisJob(contractId, { status: 'completed', result: analysisResult, percent: 100 });

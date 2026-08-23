@@ -7,7 +7,7 @@ import { getUserId } from '../user';
 export function useReviewUpload(state, deps) {
     const {
         contract, loading, loadingMessage, activeStep, isEditorReady,
-        preAnalysisData, selectedTemplateId, reviewTemplates,
+        preAnalysisData, preAnalysisConfirmation, perspective, selectedTemplateId, reviewTemplates,
         allSuggestedReviewPoints, allPotentialParties, allSuggestedCorePurposes,
         selectedReviewPoints, customPurposes,
     } = state;
@@ -67,10 +67,17 @@ export function useReviewUpload(state, deps) {
             const preAnalysisRes = await api.preAnalyzeContract({ contractId: contract.id });
             Object.assign(preAnalysisData, preAnalysisRes.data);
             selectedTemplateId.value = preAnalysisData.template_id || selectedTemplateId.value || '';
-            allSuggestedReviewPoints.value = [...preAnalysisData.suggested_review_points];
-            allPotentialParties.value = [...preAnalysisData.potential_parties];
-            allSuggestedCorePurposes.value = [...preAnalysisData.suggested_core_purposes];
-            selectedReviewPoints.value = [...preAnalysisData.suggested_review_points];
+            allSuggestedReviewPoints.value = [...(preAnalysisData.suggested_review_points || [])];
+            allPotentialParties.value = [...(preAnalysisData.potential_parties || [])];
+            allSuggestedCorePurposes.value = [...(preAnalysisData.suggested_core_purposes || [])];
+            selectedReviewPoints.value = [...(preAnalysisData.suggested_review_points || [])];
+            const autoPerspective = preAnalysisConfirmation.value.recommendedPerspective;
+            if (autoPerspective) {
+                perspective.value = autoPerspective;
+                if (!allPotentialParties.value.includes(autoPerspective)) {
+                    allPotentialParties.value.unshift(autoPerspective);
+                }
+            }
             if (preAnalysisData.suggested_core_purposes && preAnalysisData.suggested_core_purposes.length > 0) {
                 customPurposes.value = preAnalysisData.suggested_core_purposes.map(p => ({ value: p }));
             } else {

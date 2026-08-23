@@ -1,0 +1,157 @@
+{
+  "version": 2,
+  "policy_name": "思库法务助手内部业务审查规则",
+  "scenarios": [
+    { "id": "supplier_service", "name": "通用供应商服务与采购", "perspectives": ["甲方", "委托方", "采购方"], "keywords": ["供应商", "采购", "委托服务", "服务提供方", "供货"] },
+    { "id": "venue", "name": "场地租赁与预订", "perspectives": ["甲方", "承租方", "预订方"], "keywords": ["场地", "会场", "宴会厅", "租赁", "预订"] },
+    { "id": "custom_procurement", "name": "定制产品与设计制作采购", "perspectives": ["甲方", "定作方", "采购方"], "keywords": ["定制", "制作", "设计", "搭建", "物料", "印刷", "加工"] },
+    { "id": "client_service", "name": "客户服务与创意服务", "perspectives": ["乙方", "服务提供方", "受托方"], "keywords": ["创意服务", "综合服务", "品牌服务", "营销服务", "顾问服务", "活动承办"] },
+    { "id": "legal_consultation", "name": "通用法律咨询", "perspectives": [], "keywords": ["法律咨询", "法律意见", "专项法律服务"] },
+    { "id": "contract_drafting", "name": "合同起草与生成", "perspectives": [], "keywords": ["合同起草", "协议起草", "合同生成"] }
+  ],
+  "rules": [
+    {
+      "id": "TP-SUPPLIER-PAYMENT-001",
+      "scenario_id": "supplier_service",
+      "title": "供应商全额预付缺少履约保障",
+      "severity": "high",
+      "kind": "clause_match",
+      "match_any": ["100%", "百分之百", "全额", "全部款项", "一次性支付"],
+      "near_any": ["预付", "合同签订", "签署后", "服务开始前", "进场前"],
+      "description": "思库作为采购方在交付和验收前全额付款，缺少对进度、质量和返款的有效制约。",
+      "suggested_text": "合同价款采用分期支付：合同生效并收到合法有效发票后支付预付款；乙方完成全部交付并经甲方书面验收合格后支付尾款。甲方应保留20%至30%的价款作为验收尾款。"
+    },
+    {
+      "id": "TP-SUPPLIER-ACCEPTANCE-002",
+      "scenario_id": "supplier_service",
+      "title": "供应商付款未与书面验收挂钩",
+      "severity": "medium",
+      "kind": "missing_control",
+      "trigger_any": ["付款", "支付", "服务费", "采购款"],
+      "required_any": ["书面验收", "书面确认", "验收合格后", "验收报告"],
+      "description": "付款条件未以思库书面验收为前提，可能出现交付不合格但价款已结清的情形。",
+      "suggested_text": "乙方完成交付后，应向甲方提交完整交付材料；仅以甲方出具的书面验收确认作为验收合格及尾款支付条件。"
+    },
+    {
+      "id": "TP-VENUE-AUTH-001",
+      "scenario_id": "venue",
+      "title": "场地权属或出租授权保证缺失",
+      "severity": "high",
+      "kind": "missing_control",
+      "trigger_any": ["场地", "会场", "宴会厅", "租赁", "预订"],
+      "required_any": ["产权", "所有权", "经营权", "转租权", "有权出租", "授权文件"],
+      "description": "场地提供方未承诺具备合法权属、经营权或出租授权，存在活动无法进场或被第三方干预的风险。",
+      "suggested_text": "场地提供方声明并保证其对场地享有合法所有权、经营权、转租权或有效代理授权，并应在思库要求时提供相应权属或授权文件；因权属或授权瑕疵导致无法正常使用的，场地提供方应退还全部已收费用并赔偿思库损失。"
+    },
+    {
+      "id": "TP-VENUE-CANCEL-002",
+      "scenario_id": "venue",
+      "title": "场地取消条款要求思库承担全部费用",
+      "severity": "high",
+      "kind": "clause_match",
+      "match_any": ["全额租金", "全部费用", "100%", "不予退还", "概不退还"],
+      "near_any": ["取消", "改期", "解除", "退订", "终止活动"],
+      "description": "取消或改期时无论原因均承担全部费用，未区分通知时间、已发生成本和不可抗力。",
+      "suggested_text": "因思库原因取消或改期的，双方应根据通知时间及场地提供方已实际发生且无法减损的合理成本分档结算；因政策、极端天气、公共卫生事件等不可抗力导致无法举办的，思库有权改期或解除合同，双方按实际发生的合理成本结算。"
+    },
+    {
+      "id": "TP-VENUE-SUBSTITUTE-003",
+      "scenario_id": "venue",
+      "title": "场地提供方可单方替换场地",
+      "severity": "high",
+      "kind": "clause_match",
+      "match_any": ["单方调整场地", "替代场地", "更换场地"],
+      "near_any": ["无条件接受", "更高报价", "无需同意", "自行调整"],
+      "description": "场地提供方可未经思库同意替换场地，可能破坏活动方案、容量和客户承诺。",
+      "suggested_text": "未经思库事先书面同意，场地提供方不得更换约定场地或降低配套标准；确需替换的，替代场地的区位、面积、容量、设施及服务标准不得低于原约定，思库不同意的有权解除合同并要求退还全部已付费用。"
+    },
+    {
+      "id": "TP-VENUE-SAFETY-004",
+      "scenario_id": "venue",
+      "title": "场地提供方排除自身设施与过错责任",
+      "severity": "high",
+      "kind": "clause_match",
+      "match_any": ["不承担任何责任", "概不负责", "免除全部责任"],
+      "near_any": ["场地设施", "消防设备", "工作人员", "安全责任"],
+      "description": "场地提供方对设施缺陷、消防问题或自身人员过错一概免责，会将其应承担的责任转嫁给思库。",
+      "suggested_text": "场地提供方应对场地、设施设备、消防与安全条件及其工作人员的行为负责；因设施缺陷、管理瑕疵或其人员过错造成思库或第三方损失的，场地提供方应承担赔偿责任。"
+    },
+    {
+      "id": "TP-SUPPLIER-PRICE-003",
+      "scenario_id": "supplier_service",
+      "title": "供应商可单方调整服务范围或价格",
+      "severity": "high",
+      "kind": "clause_match",
+      "match_any": ["单方调整价格", "单方调整报价", "自行调整报价", "乙方有权调价", "价格由乙方单方调整"],
+      "near_any": ["价格", "报价", "服务类型", "费用"],
+      "description": "供应商可单方增加服务或调整价格，思库的采购预算和订单审批将失去控制。",
+      "suggested_text": "服务范围、交付内容及价格只能通过双方签署的书面订单或变更单调整；供应商单方发布的新报价、通知或思库未明确接受的行为不构成合同变更。"
+    },
+    {
+      "id": "TP-SUPPLIER-DATA-004",
+      "scenario_id": "supplier_service",
+      "title": "供应商可将思库数据用于模型训练或其他客户",
+      "severity": "high",
+      "kind": "clause_match",
+      "match_any": ["训练模型", "用于其他客户", "用于市场宣传", "永久保留甲方数据"],
+      "near_any": ["客户数据", "业务资料", "甲方数据", "品牌资产"],
+      "description": "供应商可超出履约目的保留和使用思库或客户数据，存在保密、客户权益和数据泄露风险。",
+      "suggested_text": "供应商仅得在履行本合同所必要的范围、期限和授权内处理思库及其客户数据，不得用于模型训练、宣传、向其他客户提供服务或任何其他目的；合同终止或思库要求时应删除或返还数据并提供书面确认。"
+    },
+    {
+      "id": "TP-SUPPLIER-RENEWAL-005",
+      "scenario_id": "supplier_service",
+      "title": "供应商框架合同长期自动续展",
+      "severity": "medium",
+      "kind": "clause_match",
+      "match_any": ["自动续展", "自动续期", "默认续展"],
+      "near_any": ["五年", "5年", "三年", "3年", "长期"],
+      "description": "框架合同默认长期续展，容易使思库在未重新评估价格、质量和供应商资信时被继续绑定。",
+      "suggested_text": "框架期限届满后不自动续展；如需续签，双方应在届满前对服务范围、价格、履约评价及风险状况重新审核并签署书面续签文件。"
+    },
+    {
+      "id": "TP-SUPPLIER-LIABILITY-006",
+      "scenario_id": "supplier_service",
+      "title": "供应商责任上限过低且未排除重大事项",
+      "severity": "high",
+      "kind": "clause_match",
+      "match_any": ["百分之一", "1%", "不超过最近一张订单"],
+      "near_any": ["累计责任", "责任上限", "赔偿责任", "数据泄露"],
+      "description": "供应商对违约、侵权、数据事件或人身损害的责任统一限制在过低金额，不足以覆盖思库的实际损失。",
+      "suggested_text": "供应商一般违约责任上限不得低于相关项目订单总价；故意或重大过失、保密义务违反、数据泄露、知识产权侵权、人身损害及应向第三方承担的责任不适用该上限。"
+    },
+    {
+      "id": "TP-CUSTOM-QUALITY-001",
+      "scenario_id": "custom_procurement",
+      "title": "定制采购缺少不合格返工与退款机制",
+      "severity": "medium",
+      "kind": "missing_control",
+      "trigger_any": ["定制", "制作", "加工", "搭建", "印刷"],
+      "required_any": ["返工", "重作", "更换", "退款", "质量不合格", "验收不合格"],
+      "description": "定制成果不合格时没有可执行的返工、重作、退款和损失承担机制。",
+      "suggested_text": "交付成果不符合约定质量、规格或验收标准的，思库有权要求供应商限期无偿返工、重作或更换；逾期未改正或改正后仍不合格的，思库有权解除相应订单，要求退还已付款项并赔偿损失。"
+    },
+    {
+      "id": "TP-CLIENT-ACCEPTANCE-001",
+      "scenario_id": "client_service",
+      "title": "客户缺少限期验收与视为验收机制",
+      "severity": "high",
+      "kind": "missing_control",
+      "trigger_any": ["验收", "交付", "确认成果"],
+      "required_any": ["视为验收", "视为验收合格", "逾期未提出异议", "未反馈视为", "默示验收"],
+      "description": "客户的验收时间没有上限，容易因拖延确认导致思库无法按期收取尾款。",
+      "suggested_text": "客户应在收到交付成果后五个工作日内完成验收并一次性书面提出异议；逾期未提出书面异议或已实际使用交付成果的，视为验收合格，客户应按约定支付尾款。"
+    },
+    {
+      "id": "TP-CLIENT-IP-002",
+      "scenario_id": "client_service",
+      "title": "创意成果权利在客户付清款项前转移",
+      "severity": "high",
+      "kind": "clause_match",
+      "match_any": ["知识产权归甲方所有", "著作权归甲方所有", "成果归甲方所有", "交付后归甲方所有"],
+      "exclude_any": ["付清全部款项", "付清全款", "全部价款支付完毕"],
+      "description": "创意成果权利转移没有以客户付清全款为条件，会削弱思库的收款保障。",
+      "suggested_text": "在客户付清本合同项下全部应付款项后，经最终验收的定制交付成果之可转让财产性权利按约定转移给客户；思库在项目前已拥有的方法论、工具、模板及通用能力仍归思库所有。"
+    }
+  ]
+}

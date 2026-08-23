@@ -22,7 +22,8 @@ const { requireRequestUserId, getRequestUserId, findOwnedContract } = require('.
 const { extractTextFromFile, wrapContractContent } = require('../../services/contractAnalysis/fileExtraction');
 const { emitAnalysisProgress, createAnalysisJob, ANALYSIS_STEPS, TOTAL_EST_SECONDS, analysisJobs } = require('../../services/contractAnalysis/analysisJob');
 const { callJsonLLM } = require('../../services/contractAnalysis/llm');
-const { matchTemplate, getTemplateById } = require('../../services/reviewTemplates');
+const { matchTemplate, getTemplateById, getTemplateCandidates } = require('../../services/reviewTemplates');
+const { analyzePartyAndScenario } = require('../../services/partyScenarioClassifier');
 const { getRelevantKnowledge, annotateKnowledgeUpdates } = require('../../services/contractAnalysis/knowledge');
 const { parseJsonField } = require('../../services/contractAnalysis/reportRendering');
 const { runAnalysisInBackground } = require('../../services/contractAnalysis/backgroundAnalysis');
@@ -83,12 +84,47 @@ module.exports = function (router) {
 ${wrapContractContent(plainText)}
 ---`;
             const analysisResult = await callJsonLLM(prompt);
-            const matchResult = await matchTemplate(analysisResult.contract_type, plainText);
-            // matchTemplate 返回单模板对象或混合合同数组;数组时取第一个作为主模板
-            const template = Array.isArray(matchResult) ? (matchResult[0]?.template || null) : matchResult;
+            const deterministicContext = analyzePartyAndScenario(plainText, {
+                contractType: analysisResult.contract_type,
+            });
+            const templateCandidates = await getTemplateCandidates(
+                analysisResult.contract_type,
+                plainText,
+                { scenarioDetection: deterministicContext.scenario_detection },
+                3,
+            );
+            let template = templateCandidates[0]?.template_id
+                ? await getTemplateById(templateCandidates[0].template_id)
+                : null;
+            if (!template) {
+                const matchResult = await matchTemplate(analysisResult.contract_type, plainText);
+                // matchTemplate 返回单模板对象或混合合同数组;数组时取第一个作为主模板
+                template = Array.isArray(matchResult) ? (matchResult[0]?.template || null) : matchResult;
+            }
             analysisResult.template_id = template?.id || 'general';
             analysisResult.template_name = template?.name || '通用合同审查模板';
             analysisResult.suggested_template_id = template?.id || 'general';
+            analysisResult.template_candidates = templateCandidates;
+            analysisResult.template_match = {
+                selected_template_id: analysisResult.template_id,
+                selected_template_name: analysisResult.template_name,
+                source: 'thinkpark_review_template_profile',
+                profile: process.env.REVIEW_TEMPLATE_PROFILE || 'thinkpark',
+                trace_version: 'template-candidates-v1',
+            };
+            analysisResult.party_identification = deterministicContext.party_identification;
+            analysisResult.scenario_detection = deterministicContext.scenario_detection;
+            analysisResult.our_party = deterministicContext.party_identification.our_party;
+            analysisResult.our_role = deterministicContext.party_identification.our_role;
+            analysisResult.requires_party_confirmation = deterministicContext.party_identification.requires_confirmation;
+            analysisResult.suggested_user_perspective = deterministicContext.party_identification.role_label;
+            if (deterministicContext.party_identification.role_label) {
+                const suggestedPerspective = `${deterministicContext.party_identification.role_label}（${deterministicContext.party_identification.our_party}）`;
+                analysisResult.potential_parties = Array.from(new Set([
+                    suggestedPerspective,
+                    ...(analysisResult.potential_parties || []),
+                ]));
+            }
             analysisResult.available_templates = undefined;
             analysisResult.suggested_review_points = Array.from(new Set([
                 ...(template?.review_points || []),
@@ -98,6 +134,40 @@ ${wrapContractContent(plainText)}
                 ...(template?.core_purposes || []),
                 ...(analysisResult.suggested_core_purposes || []),
             ]));
+            // The local template profile chooses the review family. The actual reference
+            // documents must come from the currently published ThinkPark legal KB.
+            analysisResult.reference_template_documents = [];
+            try {
+                const referenceKnowledge = await getRelevantKnowledge({
+                    text: plainText,
+                    contractType: analysisResult.contract_type,
+                    reviewPoints: analysisResult.suggested_review_points,
+                    corePurposes: analysisResult.suggested_core_purposes,
+                    perspective: deterministicContext.party_identification.role_label || '',
+                }, 8);
+                const seenDocumentIds = new Set();
+                analysisResult.reference_template_documents = referenceKnowledge
+                    .map((item) => ({
+                        document_id: item.metadata?.document_id || item.clause || null,
+                        knowledge_base_id: item.metadata?.knowledge_base_id || null,
+                        legal_app_release_id: item.metadata?.legal_app_release_id || null,
+                        legal_app_release_no: item.metadata?.legal_app_release_no || null,
+                        title: item.law || item.source_name || '思库法务助手参考文档',
+                        score: Number(item.score || 0),
+                        source_type: item.source_type || 'weknora',
+                        confidence: Number(item.score || 0) >= 0.75 ? 'high' : 'medium',
+                        reasons: ['来自思库法务助手当前发布知识库'],
+                    }))
+                    .filter((item) => {
+                        const key = item.document_id || item.title;
+                        if (!key || seenDocumentIds.has(key)) return false;
+                        seenDocumentIds.add(key);
+                        return true;
+                    })
+                    .slice(0, 3);
+            } catch (referenceError) {
+                console.warn('[pre-analysis] Reference template lookup failed:', referenceError.message);
+            }
             analysisResult.text_stats = textStats;
 
             await db('contracts').where({ id: contractId }).update({
@@ -115,7 +185,15 @@ ${wrapContractContent(plainText)}
 
     router.post('/analyze', async (req, res) => {
         const { contractId, userPerspective, preAnalysisData } = req.body;
-        if (!contractId || !userPerspective || !preAnalysisData?.contract_type) {
+        const effectivePerspective = userPerspective || preAnalysisData?.suggested_user_perspective || null;
+        if (!contractId || !effectivePerspective || !preAnalysisData?.contract_type) {
+            if (contractId && preAnalysisData?.contract_type && preAnalysisData?.requires_party_confirmation) {
+                return res.status(400).json({
+                    error: '无法自动确定思库在合同中的甲乙方角色，请人工确认后再开始审查。',
+                    code: 'PARTY_ROLE_CONFIRMATION_REQUIRED',
+                    partyIdentification: preAnalysisData.party_identification || null,
+                });
+            }
             return res.status(400).json({ error: 'Incomplete analysis request. A full preAnalysisData object is required.' });
         }
         const userId = requireRequestUserId(req, res);
@@ -148,7 +226,7 @@ ${wrapContractContent(plainText)}
             });
 
             // 后台异步执行（不 await）
-            runAnalysisInBackground(contractId, userId, userPerspective, preAnalysisData).catch((err) => {
+            runAnalysisInBackground(contractId, userId, effectivePerspective, preAnalysisData).catch((err) => {
                 console.error('[ANALYSIS] Background task crashed:', err);
             });
         } catch (error) {

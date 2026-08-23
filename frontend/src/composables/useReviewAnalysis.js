@@ -97,6 +97,10 @@ export function useReviewAnalysis(state) {
                     reviewPoints: selectedReviewPoints.value,
                     core_purposes: customPurposes.value.map(p => p.value).filter(p => p.trim() !== ''),
                     template_id: selectedTemplateId.value,
+                    party_identification: preAnalysisData.party_identification || null,
+                    scenario_detection: preAnalysisData.scenario_detection || null,
+                    template_candidates: preAnalysisData.template_candidates || [],
+                    reference_template_documents: preAnalysisData.reference_template_documents || [],
                 },
             };
             const res = await api.analyzeContract(analysisPayload);
@@ -152,6 +156,10 @@ export function useReviewAnalysis(state) {
                     reviewPoints: selectedReviewPoints.value,
                     core_purposes: customPurposes.value.map(p => p.value).filter(p => p.trim() !== ''),
                     template_id: selectedTemplateId.value,
+                    party_identification: preAnalysisData.party_identification || null,
+                    scenario_detection: preAnalysisData.scenario_detection || null,
+                    template_candidates: preAnalysisData.template_candidates || [],
+                    reference_template_documents: preAnalysisData.reference_template_documents || [],
                 },
             };
             const res = await api.analyzeContract(analysisPayload);

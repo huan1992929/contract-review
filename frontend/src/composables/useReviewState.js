@@ -69,6 +69,10 @@ export function useReviewState({ isResetting }) {
         suggested_core_purposes: [],
         template_id: '',
         template_name: '',
+        party_identification: null,
+        scenario_detection: null,
+        template_candidates: [],
+        reference_template_documents: [],
     });
 
     const showContractPreview = ref(false);
@@ -167,6 +171,63 @@ export function useReviewState({ isResetting }) {
         const preview = preAnalysisData.text_stats?.preview;
         if (preview) return preview;
         return '暂无预览内容。';
+    });
+    // New pre-analysis responses expose deterministic party/scenario/template traces.
+    // Keep a tolerant projection so historical records and older backends continue to render.
+    const preAnalysisConfirmation = computed(() => {
+        const party = preAnalysisData.party_identification || preAnalysisData.partyIdentification || {};
+        const scenario = preAnalysisData.scenario_detection || preAnalysisData.scenarioDetection || {};
+        const role = party.our_role || preAnalysisData.our_role || preAnalysisData.detected_role || '';
+        const roleLabel = party.role_label || preAnalysisData.role_label
+            || (role === 'party_a' ? '甲方' : role === 'party_b' ? '乙方' : '');
+        const ourParty = party.our_party || preAnalysisData.our_party || preAnalysisData.detected_party || '';
+        const confidence = party.confidence || preAnalysisData.identity_confidence || preAnalysisData.confidence || 'unknown';
+        const confidenceScore = party.confidence_score ?? preAnalysisData.identity_confidence_score ?? null;
+        const primaryScenario = scenario.primary || preAnalysisData.primary_scenario || null;
+        const secondaryScenarios = Array.isArray(scenario.secondary)
+            ? scenario.secondary
+            : (Array.isArray(preAnalysisData.secondary_scenarios) ? preAnalysisData.secondary_scenarios : []);
+        const rawCandidates = preAnalysisData.reference_template_documents
+            || preAnalysisData.template_candidates
+            || preAnalysisData.reference_templates
+            || preAnalysisData.matched_templates
+            || [];
+        const templateCandidates = Array.isArray(rawCandidates) && rawCandidates.length
+            ? rawCandidates
+            : (preAnalysisData.template_id || preAnalysisData.template_name ? [{
+                template_id: preAnalysisData.template_id,
+                template_name: preAnalysisData.template_name,
+                confidence: preAnalysisData.template_confidence || 'unknown',
+                reasons: [],
+                rank: 1,
+            }] : []);
+        const confirmationFlags = [
+            party.requires_confirmation,
+            scenario.requires_confirmation,
+            preAnalysisData.requires_confirmation,
+        ].filter((value) => typeof value === 'boolean');
+        const requiresConfirmation = confirmationFlags.includes(true)
+            || (!confirmationFlags.length && !roleLabel);
+        const recommendedPerspective = roleLabel
+            ? `${roleLabel}${ourParty ? `（${ourParty}）` : ''}`
+            : '';
+        return {
+            party,
+            scenario,
+            role,
+            roleLabel,
+            ourParty,
+            confidence,
+            confidenceScore,
+            primaryScenario,
+            secondaryScenarios,
+            templateCandidates,
+            requiresConfirmation,
+            confirmationReason: party.confirmation_reason || scenario.confirmation_reason
+                || preAnalysisData.confirmation_reason || '',
+            evidence: Array.isArray(party.evidence) ? party.evidence : [],
+            recommendedPerspective,
+        };
     });
     const incrementalReviews = computed(() => reviewData.incremental_reviews || []);
     const sortedCompanyReview = computed(() => {
@@ -289,7 +350,11 @@ export function useReviewState({ isResetting }) {
         editorInstanceKey.value += 1;
         editorReloading.value = false;
         editorReloadMessage.value = '正在重新载入合同文档...';
-        Object.assign(preAnalysisData, { contract_type: '', potential_parties: [], suggested_review_points: [], suggested_core_purposes: [], template_id: '', template_name: '' });
+        Object.assign(preAnalysisData, {
+            contract_type: '', potential_parties: [], suggested_review_points: [], suggested_core_purposes: [],
+            template_id: '', template_name: '', party_identification: null, scenario_detection: null,
+            template_candidates: [], reference_template_documents: [],
+        });
         selectedTemplateId.value = 'general';
         selectedReviewPoints.value = [];
         customPurposes.value = [{ value: '' }];
@@ -328,7 +393,7 @@ export function useReviewState({ isResetting }) {
         progressStepLabel, progressStatusLabel, progressStatusClass, formatDuration,
         normalizeSeverity, severityLabel, severityClass,
         firstText, joinLines, companyRiskLevel,
-        visibleAnalysisProgress, isPdfContract, contractPreviewText,
+        visibleAnalysisProgress, isPdfContract, contractPreviewText, preAnalysisConfirmation,
         incrementalReviews, sortedCompanyReview,
         filteredAndSortedDisputePoints, disputeSeverityStats, riskDashboard, hardViolations,
         saveState, resetState,

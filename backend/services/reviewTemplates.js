@@ -68,6 +68,7 @@ const rowToTemplate = (row) => {
         report_sections: row.report_sections || [],
         prompt_rules: row.prompt_rules || [],
         typical_description: row.typical_description || '',
+        typical_description_embedding: row.typical_description_embedding || null,
         is_active: row.is_active,
         is_system: row.is_system,
         created_at: row.created_at,
@@ -231,6 +232,76 @@ const keywordScore = (template, haystack) => (template.contract_type_keywords ||
     0,
 );
 
+const scoreTemplateCandidates = (templates, {
+    contractType = '',
+    text = '',
+    scenarioDetection = null,
+    textEmbedding = null,
+} = {}) => {
+    const haystack = `${contractType}\n${text}`.toLowerCase();
+    const scenarioTemplateIds = [
+        ...(scenarioDetection?.primary?.template_ids || []),
+        ...(scenarioDetection?.secondary || []).flatMap((scenario) => scenario.template_ids || []),
+    ];
+
+    return (templates || []).map((template) => {
+        const keywordHits = (template.contract_type_keywords || [])
+            .filter((keyword) => haystack.includes(String(keyword).toLowerCase()));
+        const typeHits = (template.contract_type_keywords || [])
+            .filter((keyword) => String(contractType).toLowerCase().includes(String(keyword).toLowerCase()));
+        const scenarioIndex = scenarioTemplateIds.indexOf(template.id);
+        const scenarioScore = scenarioIndex < 0 ? 0 : Math.max(0.5, 2.5 - scenarioIndex * 0.5);
+        const templateEmbedding = parseEmbedding(template.typical_description_embedding);
+        const semanticScore = textEmbedding && templateEmbedding
+            ? cosineSimilarity(textEmbedding, templateEmbedding)
+            : 0;
+        const score = keywordHits.length + typeHits.length * 2 + scenarioScore + semanticScore * 5;
+        const reasons = [];
+        if (typeHits.length) reasons.push(`合同类型命中：${typeHits.join('、')}`);
+        if (keywordHits.length) reasons.push(`合同内容命中：${keywordHits.slice(0, 5).join('、')}`);
+        if (scenarioScore) reasons.push(`业务场景推荐：${scenarioDetection?.primary?.name || '次场景'}`);
+        if (semanticScore > 0) reasons.push(`语义相似度：${semanticScore.toFixed(3)}`);
+        return {
+            template,
+            template_id: template.id,
+            template_name: template.name,
+            score: Number(score.toFixed(4)),
+            confidence: score >= 5 ? 'high' : score >= 2 ? 'medium' : 'low',
+            reasons,
+            keyword_hits: keywordHits,
+            semantic_similarity: Number(semanticScore.toFixed(4)),
+        };
+    }).sort((left, right) => right.score - left.score || left.template_id.localeCompare(right.template_id));
+};
+
+// 返回可追溯的模板候选，不改变 matchTemplate 的历史返回结构。
+const getTemplateCandidates = async (contractType = '', text = '', context = {}, limit = 3) => {
+    const templates = await getAllTemplates();
+    let textEmbedding = null;
+    try {
+        textEmbedding = await embedText(`${contractType}\n${text}`.slice(0, 4000));
+    } catch (error) {
+        console.warn('[reviewTemplates] Candidate embedding failed, using deterministic matching:', error.message);
+    }
+    const ranked = scoreTemplateCandidates(templates, {
+        contractType,
+        text,
+        scenarioDetection: context.scenarioDetection,
+        textEmbedding,
+    });
+    const meaningful = ranked.filter((candidate) => candidate.score > 0).slice(0, Math.max(1, limit));
+    const fallback = ranked.find((candidate) => candidate.template_id === 'thinkpark_general'
+        || candidate.template_id === 'general'
+        || candidate.template_id.endsWith('_general'));
+    const selected = meaningful.length ? meaningful : (fallback ? [{ ...fallback, reasons: ['未命中专项模板，使用通用模板'] }] : ranked.slice(0, 1));
+    return selected.map(({ template, ...candidate }, index) => ({
+        ...candidate,
+        rank: index + 1,
+        profile: getConfiguredTemplateProfile(),
+        trace_version: 'template-candidates-v1',
+    }));
+};
+
 // 模板匹配:LLM 类型识别强匹配优先 → 关键词命中数 + 语义相似度 × 5 加权
 // 混合合同(两个模板得分均 > 0.7)返回数组,审查点取并集;否则返回单模板对象(向后兼容)
 const matchTemplate = async (contractType = '', text = '') => {
@@ -304,6 +375,8 @@ module.exports = {
     getAllTemplates,
     getTemplateById,
     matchTemplate,
+    getTemplateCandidates,
+    scoreTemplateCandidates,
     seedTemplatesIfEmpty,
     generateTypicalDescription,
     loadTemplatesFromJson,

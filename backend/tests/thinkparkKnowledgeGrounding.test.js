@@ -10,6 +10,8 @@ const { filterGroundedIncrementalPoints } = require('../services/incrementalRevi
 
 const knowledge = [{
     source_type: 'weknora',
+    source_id: 'chunk-acceptance-001',
+    metadata: { document_id: 'doc-service-001' },
     law: '委托服务协议-单次.docx',
     source_name: '思库法务助手知识库',
     content: '服务完成后，甲方应当依据验收报告确认交付成果。',
@@ -41,6 +43,25 @@ test('keeps only findings with both a contract anchor and WeKnora evidence', () 
     }, plainText, knowledge);
 
     assert.deepEqual(filtered.compliance_findings.map((item) => item.title), ['验收期限偏离']);
+    assert.deepEqual(filtered.grounding_audit.finding_counts, { input: 3, accepted: 1, rejected: 2 });
+    assert.ok(filtered.grounding_audit.rejected.every((item) => !Object.hasOwn(item, 'original_clause')));
+});
+
+test('accepts stable source ids and tolerant document titles without copying the knowledge prefix', () => {
+    const plainText = '第五条 甲方在十个工作日内完成验收。';
+    const filtered = enforceKnowledgeGrounding({
+        compliance_findings: [{
+            title: '稳定 ID 依据',
+            original_clause: '甲方在十个工作日内完成验收',
+            basis: [{ source_id: 'chunk-acceptance-001' }],
+        }, {
+            title: '容错标题依据',
+            original_clause: '甲方在十个工作日内完成验收',
+            basis: [{ title: '委托服务协议单次' }],
+        }],
+    }, plainText, knowledge);
+
+    assert.deepEqual(filtered.compliance_findings.map((item) => item.title), ['稳定 ID 依据', '容错标题依据']);
 });
 
 test('segmented review removes global missing clauses and already-applied revisions', () => {

@@ -1,0 +1,115 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+
+const {
+    THINKPARK_ENTITIES,
+    identifyThinkParkParty,
+    classifyBusinessScenarios,
+    analyzePartyAndScenario,
+} = require('../services/partyScenarioClassifier');
+const { scoreTemplateCandidates } = require('../services/reviewTemplates');
+const db = require('../database');
+
+test('uses the versioned 10-entity ThinkPark whitelist from the legal department requirement', () => {
+    assert.equal(THINKPARK_ENTITIES.length, 10);
+    assert.ok(THINKPARK_ENTITIES.includes('思库文化传播集团有限公司'));
+    assert.ok(THINKPARK_ENTITIES.includes('杭州光映场景科技有限公司'));
+});
+
+test('identifies ThinkPark as party A from exact whitelist and returns evidence', () => {
+    const text = '甲方（服务接受方）：思库文化传播集团有限公司\n乙方（服务提供方）：北京示例科技有限公司';
+    const result = identifyThinkParkParty(text);
+
+    assert.equal(result.our_party, '思库文化传播集团有限公司');
+    assert.equal(result.our_role, 'party_a');
+    assert.equal(result.role_label, '甲方');
+    assert.equal(result.confidence, 'high');
+    assert.equal(result.requires_confirmation, false);
+    assert.match(result.evidence[0].snippet, /甲方.*思库文化传播集团有限公司/);
+});
+
+test('normalizes controlled parentheses and whitespace without loose brand matching', () => {
+    const exact = identifyThinkParkParty('乙方：思库 ( 成都 ) 文化传播有限公司');
+    assert.equal(exact.our_party, '思库（成都）文化传播有限公司');
+    assert.equal(exact.our_role, 'party_b');
+
+    const loose = identifyThinkParkParty('甲方：思库项目组');
+    assert.equal(loose.our_party, null);
+    assert.equal(loose.requires_confirmation, true);
+});
+
+test('maps a branch name to its whitelisted parent legal entity', () => {
+    const result = identifyThinkParkParty('甲方：杭州思库文化创意有限公司北京分公司');
+
+    assert.equal(result.our_party, '杭州思库文化创意有限公司');
+    assert.equal(result.our_role, 'party_a');
+    assert.deepEqual(result.candidates, ['杭州思库文化创意有限公司']);
+});
+
+test('does not guess when role evidence conflicts', () => {
+    const text = [
+        '甲方：杭州思库文化创意有限公司',
+        '签章页乙方：杭州思库文化创意有限公司',
+    ].join('\n');
+    const result = identifyThinkParkParty(text);
+
+    assert.equal(result.our_role, 'unknown');
+    assert.equal(result.requires_confirmation, true);
+    assert.match(result.confirmation_reason, /冲突/);
+});
+
+test('classifies one primary and bounded secondary scenarios with evidence', () => {
+    const result = classifyBusinessScenarios(
+        '场地预订服务合同。甲方向酒店预订会议室及活动场地，需确认档期和取消安排。',
+        { contractType: '活动场地预订服务合同', ourRole: 'party_a' },
+    );
+
+    assert.equal(result.primary.id, 'venue');
+    assert.ok(result.primary.evidence.some((item) => item.keyword === '场地'));
+    assert.ok(result.secondary.length <= 2);
+    assert.equal(result.requires_confirmation, false);
+});
+
+test('combines party and six-scenario classification deterministically', () => {
+    const result = analyzePartyAndScenario(
+        '乙方（服务提供方）：杭州思库营销策划有限公司。乙方向客户提供品牌创意服务和营销服务。',
+        { contractType: '品牌创意服务合同' },
+    );
+
+    assert.equal(result.party_identification.our_role, 'party_b');
+    assert.equal(result.scenario_detection.primary.id, 'client_service');
+});
+
+test('ranks traceable template candidates using scenario and keyword reasons', () => {
+    const templates = [
+        {
+            id: 'thinkpark_event_service',
+            name: '思库·活动承办与会务服务合同',
+            contract_type_keywords: ['活动承办', '会务服务'],
+        },
+        {
+            id: 'thinkpark_general',
+            name: '思库·通用商务合同',
+            contract_type_keywords: [],
+        },
+    ];
+    const ranked = scoreTemplateCandidates(templates, {
+        contractType: '活动承办服务合同',
+        text: '本项目提供活动承办及会务服务。',
+        scenarioDetection: {
+            primary: {
+                name: '客户服务与创意服务',
+                template_ids: ['thinkpark_event_service'],
+            },
+            secondary: [],
+        },
+    });
+
+    assert.equal(ranked[0].template_id, 'thinkpark_event_service');
+    assert.ok(ranked[0].score > ranked[1].score);
+    assert.ok(ranked[0].reasons.some((reason) => reason.startsWith('业务场景推荐')));
+});
+
+test.after(async () => {
+    await db.destroy();
+});

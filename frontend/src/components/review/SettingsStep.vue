@@ -24,6 +24,66 @@
         </div>
       </div>
 
+      <section class="recognition-panel" aria-labelledby="recognition-heading">
+        <div class="recognition-panel__heading">
+          <div>
+            <p class="recognition-panel__eyebrow">PRE-REVIEW TRACE</p>
+            <h2 id="recognition-heading">审查基线确认</h2>
+            <p>系统先确认思库立场、业务场景与参考模板，再执行风险规则。</p>
+          </div>
+          <span :class="['recognition-panel__status', { 'recognition-panel__status--warning': preAnalysisConfirmation.requiresConfirmation }]">
+            {{ preAnalysisConfirmation.requiresConfirmation ? '需人工确认' : '已自动识别' }}
+          </span>
+        </div>
+
+        <div class="recognition-grid">
+          <article class="recognition-card">
+            <span class="recognition-card__number">01</span>
+            <p class="recognition-card__label">我方主体与立场</p>
+            <strong>{{ preAnalysisConfirmation.ourParty || '未识别到思库关联主体' }}</strong>
+            <div class="recognition-card__meta">
+              <span>{{ preAnalysisConfirmation.roleLabel || '甲乙方待确认' }}</span>
+              <span>{{ confidenceLabel(preAnalysisConfirmation.confidence, preAnalysisConfirmation.confidenceScore) }}</span>
+            </div>
+            <p v-if="preAnalysisConfirmation.evidence[0]?.snippet" class="recognition-card__evidence">
+              证据：{{ preAnalysisConfirmation.evidence[0].snippet }}
+            </p>
+            <p v-else class="recognition-card__evidence">兼容历史记录：请以下方立场选择为准。</p>
+          </article>
+
+          <article class="recognition-card">
+            <span class="recognition-card__number">02</span>
+            <p class="recognition-card__label">业务场景</p>
+            <strong>{{ scenarioName(preAnalysisConfirmation.primaryScenario) || preAnalysisData.contract_type || '待确认' }}</strong>
+            <div class="recognition-card__meta">
+              <span>{{ confidenceLabel(preAnalysisConfirmation.scenario.confidence || 'unknown', preAnalysisConfirmation.scenario.confidence_score) }}</span>
+            </div>
+            <div v-if="preAnalysisConfirmation.secondaryScenarios.length" class="recognition-card__chips">
+              <span v-for="item in preAnalysisConfirmation.secondaryScenarios" :key="item.id || item.name || item">
+                {{ scenarioName(item) }}
+              </span>
+            </div>
+            <p v-else class="recognition-card__evidence">当前未识别到次场景。</p>
+          </article>
+
+          <article class="recognition-card">
+            <span class="recognition-card__number">03</span>
+            <p class="recognition-card__label">知识库参考模板</p>
+            <strong>{{ templateName(preAnalysisConfirmation.templateCandidates[0]) || preAnalysisData.template_name || '通用合同审查模板' }}</strong>
+            <div v-if="preAnalysisConfirmation.templateCandidates[0]?.confidence" class="recognition-card__meta">
+              <span>{{ confidenceLabel(preAnalysisConfirmation.templateCandidates[0].confidence) }}</span>
+            </div>
+            <p v-if="templateReason(preAnalysisConfirmation.templateCandidates[0])" class="recognition-card__evidence">
+              {{ templateReason(preAnalysisConfirmation.templateCandidates[0]) }}
+            </p>
+            <p v-else class="recognition-card__evidence">可在下方审查范围中人工更换。</p>
+          </article>
+        </div>
+        <p v-if="preAnalysisConfirmation.requiresConfirmation" class="recognition-panel__notice">
+          {{ preAnalysisConfirmation.confirmationReason || '当前识别置信度不足，请确认审查立场和参考模板后再开始分析。' }}
+        </p>
+      </section>
+
       <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
         <div class="bg-white rounded-lg shadow-md p-6">
           <h3 class="text-lg font-semibold text-text-dark">1. 选择您的审查立场</h3>
@@ -115,19 +175,33 @@ export default {
   setup() {
     const review = inject('review');
     const {
-      contract, preAnalysisData, perspective, showContractPreview,
+      contract, preAnalysisData, preAnalysisConfirmation, perspective, showContractPreview,
       contractPreviewText, allPotentialParties, reviewTemplates,
       selectedTemplateId, selectedReviewPoints, allSuggestedReviewPoints,
       customPurposes, querySearchCorePurposes, goBackToUpload,
       startAnalysis, addPurpose, removePurpose, handleTemplateChange,
     } = review;
 
+    const confidenceLabel = (confidence, score) => {
+      const labels = { high: '高置信度', medium: '中置信度', low: '低置信度', unknown: '置信度未记录' };
+      const suffix = typeof score === 'number' ? ` · ${Math.round(score * 100)}%` : '';
+      return `${labels[confidence] || labels.unknown}${suffix}`;
+    };
+    const scenarioName = (item) => (typeof item === 'string' ? item : item?.name || item?.label || '');
+    const templateName = (item) => item?.template_name || item?.name || item?.title || '';
+    const templateReason = (item) => {
+      if (!item) return '';
+      if (Array.isArray(item.reasons)) return item.reasons.slice(0, 2).join('；');
+      return item.reason || item.match_reason || '';
+    };
+
     return {
-      contract, preAnalysisData, perspective, showContractPreview,
+      contract, preAnalysisData, preAnalysisConfirmation, perspective, showContractPreview,
       contractPreviewText, allPotentialParties, reviewTemplates,
       selectedTemplateId, selectedReviewPoints, allSuggestedReviewPoints,
       customPurposes, querySearchCorePurposes, goBackToUpload,
       startAnalysis, addPurpose, removePurpose, handleTemplateChange,
+      confidenceLabel, scenarioName, templateName, templateReason,
     };
   },
 };
@@ -159,6 +233,141 @@ export default {
   border: 1px solid var(--tp-line);
   border-radius: 16px;
   box-shadow: var(--tp-shadow-sm);
+}
+
+.recognition-panel {
+  margin-bottom: 28px;
+  padding: 22px;
+  border: 1px solid var(--tp-line);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: var(--tp-shadow-sm);
+}
+
+.recognition-panel__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--tp-line);
+}
+
+.recognition-panel__heading h2 {
+  margin: 2px 0 4px;
+  color: var(--tp-text-strong);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.recognition-panel__heading > div > p:last-child,
+.recognition-card__evidence {
+  color: var(--tp-text-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.recognition-panel__eyebrow {
+  color: var(--tp-accent);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .16em;
+}
+
+.recognition-panel__status {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border: 1px solid #b8e1c8;
+  border-radius: 999px;
+  color: #14763d;
+  background: #eef9f2;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.recognition-panel__status--warning {
+  border-color: #f0cf87;
+  color: #8a5a00;
+  background: #fff8e8;
+}
+
+.recognition-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.recognition-card {
+  position: relative;
+  min-height: 150px;
+  padding: 18px;
+  overflow: hidden;
+  border: 1px solid #e3e6e8;
+  border-radius: 12px;
+  background: linear-gradient(160deg, #fff 50%, #f6f7f7 100%);
+}
+
+.recognition-card__number {
+  position: absolute;
+  right: 12px;
+  top: 8px;
+  color: rgba(214, 0, 46, .09);
+  font-family: Georgia, serif;
+  font-size: 38px;
+  font-weight: 700;
+}
+
+.recognition-card__label {
+  margin-bottom: 18px;
+  color: var(--tp-accent);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.recognition-card strong {
+  display: block;
+  padding-right: 18px;
+  color: #202426;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.recognition-card__meta,
+.recognition-card__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.recognition-card__meta span,
+.recognition-card__chips span {
+  padding: 3px 7px;
+  border-radius: 6px;
+  color: #596168;
+  background: #f0f2f3;
+  font-size: 10px;
+}
+
+.recognition-card__evidence {
+  margin-top: 10px;
+}
+
+.recognition-panel__notice {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-left: 3px solid #d99b16;
+  color: #7b5100;
+  background: #fff9ec;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+@media (max-width: 900px) {
+  .recognition-grid { grid-template-columns: 1fr; }
+  .recognition-card { min-height: 0; }
 }
 
 .confirm-step :deep(button) {

@@ -139,6 +139,34 @@ const compactForMatch = (value) => String(value || '')
     .toLowerCase()
     .replace(/[\s\p{P}\p{S}]+/gu, '');
 
+const canonicalSourceTitle = (value) => compactForMatch(
+    String(value || '')
+        .split(/[\\/]/).pop()
+        .replace(/\.(docx?|pdf|txt|md)$/i, '')
+        .replace(/[\[\]【】（）()]/g, ''),
+);
+
+const bigrams = (value) => {
+    const text = canonicalSourceTitle(value);
+    const output = new Set();
+    for (let index = 0; index < text.length - 1; index += 1) output.add(text.slice(index, index + 2));
+    return output;
+};
+
+const titleSimilarity = (left, right) => {
+    const a = canonicalSourceTitle(left);
+    const b = canonicalSourceTitle(right);
+    if (!a || !b) return 0;
+    if (a === b) return 1;
+    if (Math.min(a.length, b.length) >= 6 && (a.includes(b) || b.includes(a))) return 0.9;
+    const aPairs = bigrams(a);
+    const bPairs = bigrams(b);
+    if (!aPairs.size || !bPairs.size) return 0;
+    let intersection = 0;
+    for (const pair of aPairs) if (bPairs.has(pair)) intersection += 1;
+    return (2 * intersection) / (aPairs.size + bPairs.size);
+};
+
 const hasTextAnchor = (item, plainText) => {
     const documentText = compactForMatch(plainText);
     if (!documentText) return false;
@@ -148,14 +176,35 @@ const hasTextAnchor = (item, plainText) => {
 };
 
 const knowledgeLabels = (item) => [
+    item?.title,
     item?.law,
     item?.source_name,
     item?.metadata?.document_name,
     item?.metadata?.title,
 ].filter(Boolean).map(compactForMatch);
 
+const knowledgeSourceIds = (item) => [
+    item?.id,
+    item?.source_id,
+    item?.document_id,
+    item?.chunk_id,
+    item?.clause,
+    item?.metadata?.source_id,
+    item?.metadata?.document_id,
+    item?.metadata?.chunk_id,
+].filter(Boolean).map((value) => String(value));
+
+const basisItems = (item) => {
+    if (Array.isArray(item?.basis)) return item.basis;
+    if (item?.basis && typeof item.basis === 'object') return [item.basis];
+    if (typeof item?.basis === 'string') return [{ content: item.basis }];
+    if (item?.template_source) return [{ title: item.template_source }];
+    return [];
+};
+
 const hasKnowledgeEvidence = (item, knowledge) => {
     if (!Array.isArray(knowledge) || knowledge.length === 0) return false;
+    const bases = basisItems(item);
     const basisText = compactForMatch(
         typeof item?.basis === 'string'
             ? item.basis
@@ -163,11 +212,35 @@ const hasKnowledgeEvidence = (item, knowledge) => {
     );
     if (!basisText) return false;
     return knowledge.some((entry) => {
+        const entryIds = new Set(knowledgeSourceIds(entry));
+        if (bases.some((basis) => [
+            basis?.id,
+            basis?.source_id,
+            basis?.document_id,
+            basis?.chunk_id,
+            basis?.clause,
+        ].filter(Boolean).some((value) => entryIds.has(String(value))))) return true;
+        const entryTitles = [entry?.title, entry?.law, entry?.metadata?.document_name, entry?.metadata?.title].filter(Boolean);
+        if (bases.some((basis) => entryTitles.some((title) => titleSimilarity(basis?.title || basis?.source_name, title) >= 0.72))) return true;
         if (knowledgeLabels(entry).some((label) => label.length >= 4 && basisText.includes(label))) return true;
         const content = compactForMatch(entry?.content);
-        return content.length >= 12 && basisText.includes(content.slice(0, 24));
+        return bases.some((basis) => {
+            const cited = compactForMatch(basis?.content || basis?.text || '');
+            return Math.min(content.length, cited.length) >= 12 && (content.includes(cited) || cited.includes(content));
+        });
     });
 };
+
+const auditDecision = (item, { anchored, evidenced, alreadyPresent = false }) => ({
+    issue_id: item?.issue_id || item?.risk_id || item?.rule_id || null,
+    issue_type: String(item?.issue_type || 'unknown').slice(0, 32),
+    accepted: Boolean(anchored && evidenced && !alreadyPresent),
+    reasons: [
+        !anchored ? 'contract_anchor_missing' : null,
+        !evidenced ? 'knowledge_evidence_missing' : null,
+        alreadyPresent ? 'suggestion_already_present' : null,
+    ].filter(Boolean),
+});
 
 const dedupeBy = (items, keyOf, limit) => {
     const seen = new Set();
@@ -189,16 +262,25 @@ const enforceKnowledgeGrounding = (result, plainText, knowledge, {
     maxSuggestions = 24,
 } = {}) => {
     const source = result && typeof result === 'object' ? result : {};
-    const groundedFindings = (Array.isArray(source.compliance_findings) ? source.compliance_findings : [])
-        .filter((item) => hasTextAnchor(item, plainText) && hasKnowledgeEvidence(item, knowledge));
-    const groundedSuggestions = (Array.isArray(source.modification_suggestions) ? source.modification_suggestions : [])
-        .filter((item) => {
-            const isAppend = item.operation === 'append' && String(item.current_clause || '').trim() === '合同未约定';
-            const anchored = isAppend ? allowMissingClauses : hasTextAnchor(item, plainText);
-            const suggestionAlreadyPresent = compactForMatch(item.suggested_text).length >= 8
-                && compactForMatch(plainText).includes(compactForMatch(item.suggested_text));
-            return anchored && !suggestionAlreadyPresent && hasKnowledgeEvidence(item, knowledge);
+    const findings = Array.isArray(source.compliance_findings) ? source.compliance_findings : [];
+    const findingAudit = findings.map((item) => auditDecision(item, {
+        anchored: hasTextAnchor(item, plainText),
+        evidenced: hasKnowledgeEvidence(item, knowledge),
+    }));
+    const groundedFindings = findings.filter((item, index) => findingAudit[index].accepted);
+    const suggestions = Array.isArray(source.modification_suggestions) ? source.modification_suggestions : [];
+    const suggestionAudit = suggestions.map((item) => {
+        const isAppend = item.operation === 'append' && String(item.current_clause || '').trim() === '合同未约定';
+        const anchored = isAppend ? allowMissingClauses : hasTextAnchor(item, plainText);
+        const suggestionAlreadyPresent = compactForMatch(item.suggested_text).length >= 8
+            && compactForMatch(plainText).includes(compactForMatch(item.suggested_text));
+        return auditDecision(item, {
+            anchored,
+            evidenced: hasKnowledgeEvidence(item, knowledge),
+            alreadyPresent: suggestionAlreadyPresent,
         });
+    });
+    const groundedSuggestions = suggestions.filter((item, index) => suggestionAudit[index].accepted);
     const groundedMissing = allowMissingClauses
         ? (Array.isArray(source.missing_clauses) ? source.missing_clauses : [])
             .filter((item) => hasKnowledgeEvidence(item, knowledge))
@@ -231,6 +313,12 @@ const enforceKnowledgeGrounding = (result, plainText, knowledge, {
         text_errors: (Array.isArray(source.text_errors) ? source.text_errors : [])
             .filter((item) => hasTextAnchor(item, plainText)),
         calculation_errors: Array.isArray(source.calculation_errors) ? source.calculation_errors : [],
+        grounding_audit: {
+            version: 2,
+            finding_counts: { input: findings.length, accepted: groundedFindings.length, rejected: findings.length - groundedFindings.length },
+            suggestion_counts: { input: suggestions.length, accepted: groundedSuggestions.length, rejected: suggestions.length - groundedSuggestions.length },
+            rejected: [...findingAudit, ...suggestionAudit].filter((item) => !item.accepted).slice(0, 50),
+        },
     };
 };
 
@@ -269,6 +357,14 @@ const normalizeAnalysisResult = (result, plainText = '') => {
     seal_analysis: Array.isArray(result.seal_analysis) ? result.seal_analysis : [],
     relevant_laws: Array.isArray(result.relevant_laws) ? result.relevant_laws : [],
     company_review: Array.isArray(result.company_review) ? result.company_review : [],
+    grounding_audit: result.grounding_audit && typeof result.grounding_audit === 'object'
+        ? result.grounding_audit
+        : {
+            version: 2,
+            finding_counts: { input: 0, accepted: 0, rejected: 0 },
+            suggestion_counts: { input: 0, accepted: 0, rejected: 0 },
+            rejected: [],
+        },
     };
 };
 
@@ -288,6 +384,12 @@ const aggregateClauseResults = (clauseResults) => {
         seal_analysis: [],
         relevant_laws: [],
         company_review: [],
+        grounding_audit: {
+            version: 2,
+            finding_counts: { input: 0, accepted: 0, rejected: 0 },
+            suggestion_counts: { input: 0, accepted: 0, rejected: 0 },
+            rejected: [],
+        },
     };
     const dpSeen = new Set();        // dispute_points 去重：title+original_clause
     const mcSeen = new Set();        // missing_clauses 去重：title
@@ -322,6 +424,16 @@ const aggregateClauseResults = (clauseResults) => {
         for (const bc of (res.breach_cost_analysis || [])) aggregate.breach_cost_analysis.push(bc);
         for (const item of (res.text_errors || [])) aggregate.text_errors.push({ ...item, clause_id: clauseId });
         for (const item of (res.calculation_errors || [])) aggregate.calculation_errors.push({ ...item, clause_id: clauseId });
+        if (res.grounding_audit) {
+            for (const key of ['input', 'accepted', 'rejected']) {
+                aggregate.grounding_audit.finding_counts[key] += Number(res.grounding_audit.finding_counts?.[key] || 0);
+                aggregate.grounding_audit.suggestion_counts[key] += Number(res.grounding_audit.suggestion_counts?.[key] || 0);
+            }
+            aggregate.grounding_audit.rejected.push(...(res.grounding_audit.rejected || []).map((item) => ({
+                ...item,
+                clause_id: clauseId,
+            })));
+        }
     }
     // 跨条款一致性检查:违约金 vs 付款金额口径
     const extractAmount = (text) => {
@@ -362,6 +474,7 @@ const aggregateClauseResults = (clauseResults) => {
     aggregate.compliance_findings = aggregate.compliance_findings.slice(0, 24);
     aggregate.dispute_points = aggregate.dispute_points.slice(0, 24);
     aggregate.missing_clauses = aggregate.missing_clauses.slice(0, 6);
+    aggregate.grounding_audit.rejected = aggregate.grounding_audit.rejected.slice(0, 50);
     return aggregate;
 };
 
