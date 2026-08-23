@@ -9,7 +9,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const db = require('../../database');
 
-const REVIEW_POLICY_VERSION = 'holistic-fixed-coverage-v2';
+const REVIEW_POLICY_VERSION = 'holistic-fixed-coverage-v3';
 
 const CORE_REVIEW_TOPICS = Object.freeze([
     { id: 'payment', label: '付款与预付保障', query: '付款节点 预付款 履约保障 账期 发票' },
