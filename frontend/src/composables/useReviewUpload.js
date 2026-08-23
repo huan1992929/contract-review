@@ -3,11 +3,12 @@ import { ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import api from '../api';
 import { getUserId } from '../user';
+import { resolveRecommendedPerspective } from '../utils/reviewPerspective';
 
 export function useReviewUpload(state, deps) {
     const {
         contract, loading, loadingMessage, activeStep, isEditorReady,
-        preAnalysisData, preAnalysisConfirmation, perspective, selectedTemplateId, reviewTemplates,
+        preAnalysisData, perspective, selectedTemplateId, reviewTemplates,
         allSuggestedReviewPoints, allPotentialParties, allSuggestedCorePurposes,
         selectedReviewPoints, customPurposes,
     } = state;
@@ -71,7 +72,9 @@ export function useReviewUpload(state, deps) {
             allPotentialParties.value = [...(preAnalysisData.potential_parties || [])];
             allSuggestedCorePurposes.value = [...(preAnalysisData.suggested_core_purposes || [])];
             selectedReviewPoints.value = [...(preAnalysisData.suggested_review_points || [])];
-            const autoPerspective = preAnalysisConfirmation.value.recommendedPerspective;
+            // Resolve directly from the response instead of depending on a computed value
+            // during the same reactive tick. This makes the first render match reload behavior.
+            const autoPerspective = resolveRecommendedPerspective(preAnalysisData);
             if (autoPerspective) {
                 perspective.value = autoPerspective;
                 if (!allPotentialParties.value.includes(autoPerspective)) {

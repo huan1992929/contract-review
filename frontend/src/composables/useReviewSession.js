@@ -1,6 +1,7 @@
 // Review.vue 会话持久化与合同加载
 import { ElMessage } from 'element-plus';
 import api from '../api';
+import { resolveRecommendedPerspective } from '../utils/reviewPerspective';
 
 export function useReviewSession(state, deps) {
     const {
@@ -23,14 +24,18 @@ export function useReviewSession(state, deps) {
             const response = await api.getContractDetails(contractId);
             const contractData = response.data;
 
-            activeStep.value = 2;
             Object.assign(contract, contractData.contract);
             setupSocket(contract.id);
-            perspective.value = contractData.perspective;
             Object.assign(preAnalysisData, contractData.preAnalysisData || {});
+            const normalizedStatus = String(contractData.analysisStatus || '').toLowerCase();
+            activeStep.value = normalizedStatus === 'pre_analyzed' ? 1 : 2;
+            perspective.value = contractData.perspective || resolveRecommendedPerspective(preAnalysisData);
             selectedTemplateId.value = preAnalysisData.template_id || '';
             allSuggestedReviewPoints.value = contractData.preAnalysisData?.suggested_review_points || [];
             allPotentialParties.value = contractData.preAnalysisData?.potential_parties || [];
+            if (perspective.value && !allPotentialParties.value.includes(perspective.value)) {
+                allPotentialParties.value.unshift(perspective.value);
+            }
             allSuggestedCorePurposes.value = contractData.preAnalysisData?.suggested_core_purposes || [];
             selectedReviewPoints.value = contractData.selectedReviewPoints || [];
             customPurposes.value = contractData.customPurposes || [{ value: '' }];
