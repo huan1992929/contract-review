@@ -11,6 +11,7 @@ const crypto = require('crypto');
 const {
     attachRiskIdentity,
     reconcileRiskLedger,
+    scopeRiskIssueKey,
 } = require('./incrementalReview');
 
 const asArray = (value) => (Array.isArray(value) ? value : []);
@@ -151,7 +152,7 @@ const persistInitialRiskLedger = async ({
 
         for (const issue of projection.issues) {
             const row = {
-                issue_key: issue.issue_id,
+                issue_key: scopeRiskIssueKey(contractId, issue.issue_id),
                 contract_id: contractId,
                 fingerprint: issue.risk_fingerprint,
                 clause_id: issue.clause_id,

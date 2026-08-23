@@ -24,6 +24,7 @@ const {
     runIncrementalReview,
     reconcileRiskLedger,
     normalizeRiskStatus,
+    scopeRiskIssueKey,
 } = require('../../services/incrementalReview');
 const { parseJsonField } = require('../../services/contractAnalysis/reportRendering');
 const { getTemplateById, matchTemplate } = require('../../services/reviewTemplates');
@@ -87,7 +88,7 @@ const persistRiskLedger = async ({ trx, contract, userId, lastVersion, increment
 
     for (const issue of incrementalResult.dispute_points) {
         const row = {
-            issue_key: issue.issue_id,
+            issue_key: scopeRiskIssueKey(contract.id, issue.issue_id),
             contract_id: contract.id,
             fingerprint: issue.risk_fingerprint,
             clause_id: issue.clause_id,

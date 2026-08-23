@@ -5,6 +5,18 @@ const {
     collectInitialRiskCandidates,
     buildInitialLedgerProjection,
 } = require('../services/initialRiskLedger');
+const { scopeRiskIssueKey } = require('../services/incrementalReview');
+
+test('scopes identical governed risk ids to each contract without losing idempotency', () => {
+    const governedId = 'tp-risk-tp-supplier-acceptance-002-a3e5f70c6e08edbc';
+    const firstContractKey = scopeRiskIssueKey(8, governedId);
+    const secondContractKey = scopeRiskIssueKey(9, governedId);
+
+    assert.notEqual(firstContractKey, secondContractKey);
+    assert.equal(scopeRiskIssueKey(8, firstContractKey), firstContractKey);
+    assert.ok(firstContractKey.length <= 64);
+    assert.ok(secondContractKey.length <= 64);
+});
 
 test('initial ledger merges legacy aliases and attaches matching modification text', () => {
     const finding = {

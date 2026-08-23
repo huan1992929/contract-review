@@ -261,6 +261,20 @@ const attachRiskIdentity = (point = {}, contractId, diffs = []) => {
     };
 };
 
+/**
+ * review_issues.issue_key 在既有生产库中是全局唯一列，而业务风险身份只要求
+ * 在单份合同内稳定。将持久化键显式加上合同作用域，避免同一内部规则命中
+ * 多份合同时互相冲突。短键保持可读，超长键使用确定性摘要；重复调用幂等。
+ */
+const scopeRiskIssueKey = (contractId, issueKey) => {
+    const contractScope = `c${String(contractId)}:`;
+    const rawKey = String(issueKey || '').trim() || 'risk_unknown';
+    if (rawKey.startsWith(contractScope)) return rawKey;
+    const readable = `${contractScope}${rawKey}`;
+    if (readable.length <= 64) return readable;
+    return `${contractScope}risk_${crypto.createHash('sha256').update(rawKey).digest('hex').slice(0, 48)}`;
+};
+
 const affectedByDiff = (point, diffs) => {
     const anchor = String(point.original_clause || point.original_text || '').trim();
     const clauseId = String(point.clause_id || '').trim();
@@ -457,5 +471,6 @@ module.exports = {
     normalizeRiskStatus,
     riskFingerprint,
     attachRiskIdentity,
+    scopeRiskIssueKey,
     reconcileRiskLedger,
 };
