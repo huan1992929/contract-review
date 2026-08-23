@@ -5,6 +5,33 @@ import api from '../api';
 import { getUserId } from '../user';
 import { resolveRecommendedPerspective } from '../utils/reviewPerspective';
 
+const uniqueItems = (values) => Array.from(new Set((Array.isArray(values) ? values : [])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)));
+
+const resolveReviewProfile = (data = {}) => {
+    const hasFixedProfile = Array.isArray(data.formal_review_points)
+        || Array.isArray(data.formal_core_purposes);
+    const formalReviewPoints = uniqueItems(hasFixedProfile
+        ? data.formal_review_points
+        : data.suggested_review_points);
+    const formalCorePurposes = uniqueItems(hasFixedProfile
+        ? data.formal_core_purposes
+        : data.suggested_core_purposes);
+    const supplementalReviewPoints = uniqueItems(data.supplemental_review_points)
+        .filter((item) => !formalReviewPoints.includes(item));
+    const supplementalCorePurposes = uniqueItems(data.supplemental_core_purposes)
+        .filter((item) => !formalCorePurposes.includes(item));
+    return {
+        formalReviewPoints,
+        formalCorePurposes,
+        supplementalReviewPoints,
+        supplementalCorePurposes,
+        allReviewPoints: uniqueItems([...formalReviewPoints, ...supplementalReviewPoints]),
+        allCorePurposes: uniqueItems([...formalCorePurposes, ...supplementalCorePurposes]),
+    };
+};
+
 export function useReviewUpload(state, deps) {
     const {
         contract, loading, loadingMessage, activeStep, isEditorReady,
@@ -67,11 +94,14 @@ export function useReviewUpload(state, deps) {
         try {
             const preAnalysisRes = await api.preAnalyzeContract({ contractId: contract.id });
             Object.assign(preAnalysisData, preAnalysisRes.data);
+            const reviewProfile = resolveReviewProfile(preAnalysisData);
             selectedTemplateId.value = preAnalysisData.template_id || selectedTemplateId.value || '';
-            allSuggestedReviewPoints.value = [...(preAnalysisData.suggested_review_points || [])];
+            allSuggestedReviewPoints.value = reviewProfile.allReviewPoints;
             allPotentialParties.value = [...(preAnalysisData.potential_parties || [])];
-            allSuggestedCorePurposes.value = [...(preAnalysisData.suggested_core_purposes || [])];
-            selectedReviewPoints.value = [...(preAnalysisData.suggested_review_points || [])];
+            allSuggestedCorePurposes.value = reviewProfile.allCorePurposes;
+            // Template points form the repeatable formal audit scope. LLM supplements stay
+            // visible in the checkbox/autocomplete catalogs but are unchecked by default.
+            selectedReviewPoints.value = reviewProfile.formalReviewPoints;
             // Resolve directly from the response instead of depending on a computed value
             // during the same reactive tick. This makes the first render match reload behavior.
             const autoPerspective = resolveRecommendedPerspective(preAnalysisData);
@@ -81,8 +111,8 @@ export function useReviewUpload(state, deps) {
                     allPotentialParties.value.unshift(autoPerspective);
                 }
             }
-            if (preAnalysisData.suggested_core_purposes && preAnalysisData.suggested_core_purposes.length > 0) {
-                customPurposes.value = preAnalysisData.suggested_core_purposes.map(p => ({ value: p }));
+            if (reviewProfile.formalCorePurposes.length > 0) {
+                customPurposes.value = reviewProfile.formalCorePurposes.map(p => ({ value: p }));
             } else {
                 customPurposes.value = [{ value: '示例：确保权利与义务对等' }];
             }
@@ -180,15 +210,19 @@ export function useReviewUpload(state, deps) {
             const oldTemplate = reviewTemplates.value.find((t) => t.id === oldTemplateId);
             const oldPointsSet = new Set(oldTemplate?.review_points || []);
             const oldPurposesSet = new Set(oldTemplate?.core_purposes || []);
-            // 当前列表里不属于旧模板默认的部分 = LLM 针对合同的增量，保留
-            const llmExtraPoints = allSuggestedReviewPoints.value.filter((p) => !oldPointsSet.has(p));
-            const llmExtraPurposes = allSuggestedCorePurposes.value.filter((p) => !oldPurposesSet.has(p));
+            // 新接口显式标注 supplemental；兼容旧预分析数据时，仍以“不属于旧模板”推导。
+            const llmExtraPoints = Array.isArray(preAnalysisData.supplemental_review_points)
+                ? preAnalysisData.supplemental_review_points
+                : allSuggestedReviewPoints.value.filter((p) => !oldPointsSet.has(p));
+            const llmExtraPurposes = Array.isArray(preAnalysisData.supplemental_core_purposes)
+                ? preAnalysisData.supplemental_core_purposes
+                : allSuggestedCorePurposes.value.filter((p) => !oldPurposesSet.has(p));
             // 新列表 = 新模板默认 + LLM 增量，去重
             allSuggestedReviewPoints.value = Array.from(new Set([...newPoints, ...llmExtraPoints]));
-            selectedReviewPoints.value = [...allSuggestedReviewPoints.value];
+            selectedReviewPoints.value = [...newPoints];
             allSuggestedCorePurposes.value = Array.from(new Set([...newPurposes, ...llmExtraPurposes]));
-            customPurposes.value = allSuggestedCorePurposes.value.length
-                ? allSuggestedCorePurposes.value.map((p) => ({ value: p }))
+            customPurposes.value = newPurposes.length
+                ? newPurposes.map((p) => ({ value: p }))
                 : [{ value: '' }];
         }
         lastTemplateId = newTemplateId;

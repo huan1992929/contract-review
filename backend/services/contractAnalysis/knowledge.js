@@ -108,6 +108,54 @@ const toRelevantKnowledgeItem = (item) => ({
     metadata: item.metadata || {},
 });
 
+const knowledgeIdentity = (item) => String(
+    item?.content_hash
+    || item?.metadata?.content_hash
+    || item?.metadata?.document_id
+    || item?.document_id
+    || item?.source_id
+    || item?.id
+    || `${item?.law || item?.title || ''}|${compactText(item?.content || '', 500)}`,
+);
+
+// 保留最高分命中，同时记录它由哪些固定主题 query 召回。
+// 追踪信息只描述知识文档和 query，不包含用户/文件身份。
+const dedupeKnowledgeWithTrace = (batches, limit) => {
+    const merged = new Map();
+    for (const batch of batches || []) {
+        const queryId = String(batch?.queryId || batch?.query || '').trim();
+        for (const item of batch?.items || []) {
+            const key = knowledgeIdentity(item);
+            const score = Number(item?.score ?? item?.rerank_score ?? 0);
+            const existing = merged.get(key);
+            const matchedQueries = new Set(existing?.metadata?.matched_queries || []);
+            if (queryId) matchedQueries.add(queryId);
+            if (!existing || score > Number(existing?.score ?? existing?.rerank_score ?? 0)) {
+                merged.set(key, {
+                    ...item,
+                    metadata: {
+                        ...(item.metadata || {}),
+                        matched_queries: [...matchedQueries].sort(),
+                        knowledge_identity: key,
+                    },
+                });
+            } else {
+                existing.metadata = {
+                    ...(existing.metadata || {}),
+                    matched_queries: [...matchedQueries].sort(),
+                    knowledge_identity: key,
+                };
+            }
+        }
+    }
+    return [...merged.values()]
+        .sort((a, b) => {
+            const scoreDelta = Number(b?.score ?? b?.rerank_score ?? 0) - Number(a?.score ?? a?.rerank_score ?? 0);
+            return scoreDelta || knowledgeIdentity(a).localeCompare(knowledgeIdentity(b));
+        })
+        .slice(0, limit);
+};
+
 // 置信加权融合：通道 A（审查维度）与通道 B（合同内容）同时命中的法条置信最高，优先保留并加分
 // 仅 A 或仅 B 命中的项按分数排序在后；去重按 content_hash/source_id
 const mergeChannelsWithConfidence = (channelA, channelB, limit) => {
@@ -146,7 +194,21 @@ const mergeChannelsWithConfidence = (channelA, channelB, limit) => {
 // CONTRACT_CHUNK_MAX > 0 时限制通道 B 的 chunk 数，控制长合同检索成本
 const getRelevantKnowledge = async (options, limit = 8) => {
     if (isThinkParkKnowledgeGatewayEnabled()) {
-        return searchThinkParkKnowledge(options, limit);
+        const fixedQueries = Array.isArray(options?.fixedTopicQueries)
+            ? options.fixedTopicQueries
+                .map((item) => (typeof item === 'string' ? { id: item, query: item } : item))
+                .filter((item) => String(item?.query || '').trim())
+            : [];
+        if (!fixedQueries.length) return searchThinkParkKnowledge(options, limit);
+        const batches = await Promise.all(fixedQueries.map(async (item) => ({
+            queryId: String(item.id || item.query),
+            items: await searchThinkParkKnowledge({
+                contractType: options.contractType,
+                perspective: options.perspective,
+                question: String(item.query),
+            }, Math.max(3, Math.ceil(limit / fixedQueries.length) + 1)),
+        })));
+        return dedupeKnowledgeWithTrace(batches, limit);
     }
     const sourceTypes = ['law', 'case', 'rule', 'guide'];
 
@@ -186,7 +248,15 @@ const getRelevantKnowledge = async (options, limit = 8) => {
         return merged;
     }
 
-    const channelAQueries = buildChannelAQueries(options);
+    const fixedTopicQueries = Array.isArray(options?.fixedTopicQueries)
+        ? options.fixedTopicQueries
+            .map((item) => String(typeof item === 'string' ? item : item?.query || '').trim())
+            .filter(Boolean)
+        : [];
+    const channelAQueries = [
+        ...fixedTopicQueries,
+        ...buildChannelAQueries(options),
+    ];
     // 专项审查:text 是用户选中的核心条款,作为通道 A 高优先级 query,提升精准命中
     // 全文审查时 text 过长(>500 字),不作为 query,避免通道 A 被合同原文稀释
     const rawText = String(options.text || '').trim();
@@ -273,6 +343,8 @@ module.exports = {
     buildChannelAQueries,
     toRelevantKnowledgeItem,
     mergeChannelsWithConfidence,
+    knowledgeIdentity,
+    dedupeKnowledgeWithTrace,
     getRelevantKnowledge,
     annotateKnowledgeUpdates,
 };

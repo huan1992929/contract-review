@@ -148,9 +148,9 @@ test('终审合并重复根风险并拒绝不成立风险', () => {
         makeIssue('wording', '2.1 合同价款为五万元。'),
     ], {
         decisions: [
-            { issue_id: 'payment', decision: 'keep', severity: 'high' },
-            { issue_id: 'acceptance', decision: 'merge', merge_into: 'payment' },
-            { issue_id: 'wording', decision: 'reject' },
+            { issue_id: 'payment', decision: 'keep', severity: 'high', reason: '付款与验收未联动' },
+            { issue_id: 'acceptance', decision: 'merge', merge_into: 'payment', reason: '属于同一交付根因' },
+            { issue_id: 'wording', decision: 'reject', reason: '整体合同已覆盖' },
         ],
     });
     assert.equal(output.length, 1);
@@ -160,4 +160,77 @@ test('终审合并重复根风险并拒绝不成立风险', () => {
     const result = buildHolisticAnalysisResult({ plan: { contract_summary: '', party_alignment: {}, candidates: [1, 2, 3] }, issues: output });
     assert.equal(result.review_mode, 'holistic');
     assert.equal(result.modification_suggestions.length, 1);
+    assert.equal(result.holistic_review.adjudication_rejected_count, 1);
+    assert.equal(result.holistic_review.merged_count, 1);
+    assert.deepEqual(result.grounding_audit.rejected, [
+        {
+            source_stage: 'adjudication',
+            outcome: 'rejected',
+            reason_code: 'ADJUDICATION_REJECTED',
+            reason: '整体合同已覆盖',
+            issue_id: 'wording',
+            title: 'wording',
+        },
+        {
+            source_stage: 'adjudication',
+            outcome: 'merged',
+            reason_code: 'ADJUDICATION_MERGED',
+            reason: '属于同一交付根因',
+            issue_id: 'acceptance',
+            title: 'acceptance',
+            merge_into: 'payment',
+        },
+    ]);
+});
+
+test('证据核验拒绝与修订锚点失败均保留明确原因', () => {
+    const plan = normalizeHolisticPlan({
+        candidate_issues: [
+            { title: '知识不支持', anchors: ['2.2 签约后支付全部款项。'] },
+            { title: '修订无法定位', anchors: ['4.1 部署完成后由甲方验收。'] },
+        ],
+    }, contract);
+    materializeGroundedIssue({
+        candidate: plan.candidates[0],
+        plainText: contract,
+        knowledge: [],
+        rawIssue: { accepted: false, reason: '仅属一般最佳实践' },
+    });
+    materializeGroundedIssue({
+        candidate: plan.candidates[1],
+        plainText: contract,
+        knowledge: [{ source_id: 'k1', content: '验收规则' }],
+        rawIssue: {
+            accepted: true,
+            basis_refs: [1],
+            changes: [{
+                operation: 'replace',
+                current_clause: '合同中不存在的条款',
+                suggested_text: '建议验收合格后付款。',
+            }],
+        },
+    });
+    const result = buildHolisticAnalysisResult({ plan, issues: [] });
+    assert.equal(result.holistic_review.evidence_rejected_count, 2);
+    assert.deepEqual(
+        result.grounding_audit.rejected.map((item) => item.reason_code),
+        ['EVIDENCE_REJECTED', 'EVIDENCE_CHANGE_INVALID'],
+    );
+    assert.deepEqual(result.grounding_audit.rejected[1].change_reason_codes, ['CURRENT_CLAUSE_NOT_FOUND']);
+    assert.ok(result.grounding_audit.rejected.every((item) => !Object.hasOwn(item, 'original_clause')));
+});
+
+test('终审缺少决定时不再静默丢弃', () => {
+    const issue = {
+        issue_id: 'missing-decision',
+        finding: { issue_id: 'missing-decision', title: '未裁决风险', severity: 'medium', basis: [] },
+        suggestion: { issue_id: 'missing-decision', severity: 'medium', basis: [] },
+    };
+    const output = applyHolisticAdjudication([issue], { decisions: [] });
+    const result = buildHolisticAnalysisResult({
+        plan: { contract_summary: '', party_alignment: {}, candidates: [{}] },
+        issues: output,
+    });
+    assert.equal(result.modification_suggestions.length, 0);
+    assert.equal(result.grounding_audit.rejected[0].reason_code, 'ADJUDICATION_DECISION_MISSING');
 });

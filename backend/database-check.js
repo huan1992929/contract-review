@@ -125,6 +125,27 @@ async function resetAndRebuildDatabase() {
     await ensureColumn('contracts', 'onlyoffice_saved_at', (table) => table.timestamp('onlyoffice_saved_at'));
     await ensureColumn('contracts', 'onlyoffice_saved_key', (table) => table.string('onlyoffice_saved_key'));
 
+    // 审核结果按“逻辑审核文本+模板+立场+知识库发布+策略+模型设置”指纹复用。
+    // 表中不保存 user_id、文件名、存储路径或 OnlyOffice key，避免跨用户泄露文件信息。
+    const hasReviewResultCacheTable = await db.schema.hasTable('review_result_cache');
+    if (!hasReviewResultCacheTable) {
+      console.log('[DB Init] Creating new `review_result_cache` table...');
+      await db.schema.createTable('review_result_cache', (table) => {
+        table.string('fingerprint', 64).primary();
+        table.string('document_sha256', 64).notNullable().index();
+        table.string('logical_text_sha256', 64).notNullable().index();
+        table.string('template_id', 128).notNullable();
+        table.string('perspective', 256).notNullable();
+        table.string('contract_type', 256).notNullable();
+        table.string('knowledge_release_id', 512).notNullable();
+        table.string('policy_version', 128).notNullable();
+        table.string('model_settings_hash', 64).notNullable();
+        table.text('result_json').notNullable();
+        table.timestamp('created_at').defaultTo(db.fn.now());
+        table.timestamp('updated_at').defaultTo(db.fn.now());
+      });
+    }
+
     const hasContractVersionsTable = await db.schema.hasTable('contract_versions');
     if (!hasContractVersionsTable) {
       console.log('[DB Init] Creating new `contract_versions` table...');

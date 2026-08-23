@@ -33,6 +33,43 @@ const { getRelevantKnowledge, annotateKnowledgeUpdates } = require('../../servic
 const { parseJsonField } = require('../../services/contractAnalysis/reportRendering');
 const { runAnalysisInBackground } = require('../../services/contractAnalysis/backgroundAnalysis');
 
+function uniqueNonEmpty(values) {
+    return Array.from(new Set((Array.isArray(values) ? values : [])
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)));
+}
+
+/**
+ * Keep the formal audit scope stable across repeated uploads. The matched template is
+ * authoritative; contract-specific LLM ideas remain visible as optional supplements.
+ */
+function applyFixedTemplateReviewProfile(analysisResult, template) {
+    const formalReviewPoints = uniqueNonEmpty(template?.review_points);
+    const formalCorePurposes = uniqueNonEmpty(template?.core_purposes);
+    const formalReviewPointSet = new Set(formalReviewPoints);
+    const formalCorePurposeSet = new Set(formalCorePurposes);
+    const supplementalReviewPoints = uniqueNonEmpty(analysisResult.suggested_review_points)
+        .filter((item) => !formalReviewPointSet.has(item));
+    const supplementalCorePurposes = uniqueNonEmpty(analysisResult.suggested_core_purposes)
+        .filter((item) => !formalCorePurposeSet.has(item));
+
+    analysisResult.formal_review_points = formalReviewPoints;
+    analysisResult.formal_core_purposes = formalCorePurposes;
+    analysisResult.supplemental_review_points = supplementalReviewPoints;
+    analysisResult.supplemental_core_purposes = supplementalCorePurposes;
+    // Keep the legacy suggestion fields as the complete display catalog. New clients use
+    // formal_* for defaults and supplemental_* for optional, unchecked additions.
+    analysisResult.suggested_review_points = [...formalReviewPoints, ...supplementalReviewPoints];
+    analysisResult.suggested_core_purposes = [...formalCorePurposes, ...supplementalCorePurposes];
+    analysisResult.review_profile = {
+        source: 'matched_template',
+        formal_scope: 'template_only',
+        supplemental_default_selected: false,
+        trace_version: 'fixed-template-review-profile-v1',
+    };
+    return analysisResult;
+}
+
 module.exports = function (router) {
     router.post('/pre-analyze', async (req, res) => {
         const { contractId } = req.body;
@@ -131,14 +168,7 @@ ${wrapContractContent(plainText)}
                 ]));
             }
             analysisResult.available_templates = undefined;
-            analysisResult.suggested_review_points = Array.from(new Set([
-                ...(template?.review_points || []),
-                ...(analysisResult.suggested_review_points || []),
-            ]));
-            analysisResult.suggested_core_purposes = Array.from(new Set([
-                ...(template?.core_purposes || []),
-                ...(analysisResult.suggested_core_purposes || []),
-            ]));
+            applyFixedTemplateReviewProfile(analysisResult, template);
             // The local template profile chooses the review family. The actual reference
             // documents must come from the currently published ThinkPark legal KB.
             analysisResult.reference_template_documents = [];
@@ -146,8 +176,8 @@ ${wrapContractContent(plainText)}
                 const referenceKnowledge = await getRelevantKnowledge({
                     text: plainText,
                     contractType: analysisResult.contract_type,
-                    reviewPoints: analysisResult.suggested_review_points,
-                    corePurposes: analysisResult.suggested_core_purposes,
+                    reviewPoints: analysisResult.formal_review_points,
+                    corePurposes: analysisResult.formal_core_purposes,
                     perspective: deterministicContext.party_identification.role_label || '',
                 }, 8);
                 const seenDocumentIds = new Set();
@@ -360,3 +390,5 @@ ${wrapContractContent(text)}
         }
     });
 };
+
+module.exports.applyFixedTemplateReviewProfile = applyFixedTemplateReviewProfile;

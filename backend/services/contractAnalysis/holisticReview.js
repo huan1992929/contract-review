@@ -10,6 +10,8 @@ const crypto = require('crypto');
 
 const MAX_HOLISTIC_CANDIDATES = 12;
 const MAX_GROUNDED_ISSUES = 12;
+const candidateEvidenceAudit = Symbol('candidateEvidenceAudit');
+const adjudicationAudit = Symbol('adjudicationAudit');
 
 const asArray = (value) => (Array.isArray(value) ? value : []);
 const compact = (value) => String(value || '').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
@@ -113,31 +115,87 @@ const normalizeChange = (item, plainText) => {
     const existingRevisionText = String(item?.existing_revision_text || '').trim();
     const reviewBaseline = String(item?.review_baseline || '').trim();
     const suggestedText = String(item?.suggested_text || '').trim();
-    if (!suggestedText) return null;
-    if (operation === 'replace' && !anchoredInContract(currentClause, plainText)) return null;
-    if (existingRevisionText && !anchoredInContract(existingRevisionText, plainText)) return null;
-    if (reviewBaseline && !anchoredInContract(reviewBaseline, plainText)) return null;
+    if (!suggestedText) return { change: null, reason_code: 'SUGGESTED_TEXT_MISSING' };
+    if (operation === 'replace' && !anchoredInContract(currentClause, plainText)) {
+        return { change: null, reason_code: 'CURRENT_CLAUSE_NOT_FOUND' };
+    }
+    if (existingRevisionText && !anchoredInContract(existingRevisionText, plainText)) {
+        return { change: null, reason_code: 'EXISTING_REVISION_NOT_FOUND' };
+    }
+    if (reviewBaseline && !anchoredInContract(reviewBaseline, plainText)) {
+        return { change: null, reason_code: 'REVIEW_BASELINE_NOT_FOUND' };
+    }
     if (operation === 'append' && currentClause && currentClause !== '合同未约定'
-        && !anchoredInContract(currentClause, plainText)) return null;
-    if (compact(suggestedText).length >= 8 && compact(plainText).includes(compact(suggestedText))) return null;
+        && !anchoredInContract(currentClause, plainText)) {
+        return { change: null, reason_code: 'APPEND_ANCHOR_NOT_FOUND' };
+    }
+    if (compact(suggestedText).length >= 8 && compact(plainText).includes(compact(suggestedText))) {
+        return { change: null, reason_code: 'SUGGESTION_ALREADY_PRESENT' };
+    }
     return {
-        operation,
-        clause_id: String(item?.clause_id || '').trim(),
-        current_clause: currentClause || '合同未约定',
-        original_text: currentClause || '合同未约定',
-        ...(existingRevisionText ? { existing_revision_text: existingRevisionText } : {}),
-        ...(reviewBaseline ? { review_baseline: reviewBaseline } : {}),
-        suggested_text: suggestedText,
-        anchor_hint: String(item?.anchor_hint || currentClause).trim().slice(0, 120),
+        change: {
+            operation,
+            clause_id: String(item?.clause_id || '').trim(),
+            current_clause: currentClause || '合同未约定',
+            original_text: currentClause || '合同未约定',
+            ...(existingRevisionText ? { existing_revision_text: existingRevisionText } : {}),
+            ...(reviewBaseline ? { review_baseline: reviewBaseline } : {}),
+            suggested_text: suggestedText,
+            anchor_hint: String(item?.anchor_hint || currentClause).trim().slice(0, 120),
+        },
+        reason_code: '',
     };
 };
 
+const recordCandidateEvidenceAudit = (candidate, details) => {
+    if (!candidate || typeof candidate !== 'object') return;
+    Object.defineProperty(candidate, candidateEvidenceAudit, {
+        value: {
+            source_stage: 'evidence',
+            issue_id: candidate.issue_id || '',
+            title: candidate.title || '',
+            ...details,
+        },
+        configurable: true,
+    });
+};
+
 const materializeGroundedIssue = ({ rawIssue, candidate, knowledge, plainText }) => {
-    if (!rawIssue || rawIssue.accepted !== true) return null;
+    if (!rawIssue || rawIssue.accepted !== true) {
+        recordCandidateEvidenceAudit(candidate, {
+            outcome: 'rejected',
+            reason_code: rawIssue ? 'EVIDENCE_REJECTED' : 'EVIDENCE_RESPONSE_EMPTY',
+            reason: String(rawIssue?.reason || rawIssue?.description
+                || (rawIssue ? '知识依据不直接支持该候选风险。' : '证据核验未返回可用结果。')).trim(),
+        });
+        return null;
+    }
     const basis = selectBasis(rawIssue.basis_refs, knowledge);
-    if (!basis.length) return null;
-    const changes = asArray(rawIssue.changes).map((item) => normalizeChange(item, plainText)).filter(Boolean);
-    if (!changes.length) return null;
+    if (!basis.length) {
+        recordCandidateEvidenceAudit(candidate, {
+            outcome: 'rejected',
+            reason_code: 'EVIDENCE_BASIS_MISSING',
+            reason: '证据核验未引用任何有效知识库依据。',
+        });
+        return null;
+    }
+    const normalizedChanges = asArray(rawIssue.changes).map((item) => normalizeChange(item, plainText));
+    const changes = normalizedChanges.map((item) => item.change).filter(Boolean);
+    if (!changes.length) {
+        const changeReasonCodes = [...new Set(normalizedChanges.map((item) => item.reason_code).filter(Boolean))];
+        recordCandidateEvidenceAudit(candidate, {
+            outcome: 'rejected',
+            reason_code: 'EVIDENCE_CHANGE_INVALID',
+            reason: '证据核验未生成可安全定位的修订。',
+            change_reason_codes: changeReasonCodes,
+        });
+        return null;
+    }
+    recordCandidateEvidenceAudit(candidate, {
+        outcome: 'accepted',
+        reason_code: 'EVIDENCE_ACCEPTED',
+        reason: '候选风险已通过知识依据和合同锚点核验。',
+    });
     const title = String(rawIssue.title || candidate.title).trim() || candidate.title;
     const primary = changes[0];
     const issueId = candidate.issue_id;
@@ -227,9 +285,31 @@ const applyHolisticAdjudication = (issues, rawAdjudication) => {
         item,
     ]));
     const output = new Map();
+    const audit = [];
     for (const issue of issues) {
         const decision = decisions.get(issue.issue_id);
-        if (!decision || decision.decision === 'reject') continue;
+        if (!decision) {
+            audit.push({
+                source_stage: 'adjudication',
+                outcome: 'rejected',
+                reason_code: 'ADJUDICATION_DECISION_MISSING',
+                reason: '终审结果缺少该风险的处置决定。',
+                issue_id: issue.issue_id,
+                title: issue.finding.title,
+            });
+            continue;
+        }
+        if (decision.decision === 'reject') {
+            audit.push({
+                source_stage: 'adjudication',
+                outcome: 'rejected',
+                reason_code: 'ADJUDICATION_REJECTED',
+                reason: String(decision.reason || '终审判定该风险不应保留。'),
+                issue_id: issue.issue_id,
+                title: issue.finding.title,
+            });
+            continue;
+        }
         if (decision.decision === 'merge') continue;
         const severity = normalizeSeverity(decision.severity || issue.finding.severity);
         output.set(issue.issue_id, {
@@ -237,21 +317,62 @@ const applyHolisticAdjudication = (issues, rawAdjudication) => {
             finding: { ...issue.finding, severity, final_reason: String(decision.reason || '') },
             suggestion: { ...issue.suggestion, severity },
         });
+        audit.push({
+            source_stage: 'adjudication',
+            outcome: 'kept',
+            reason_code: 'ADJUDICATION_KEPT',
+            reason: String(decision.reason || '终审保留该风险。'),
+            issue_id: issue.issue_id,
+            title: issue.finding.title,
+        });
     }
     for (const issue of issues) {
         const decision = decisions.get(issue.issue_id);
         if (!decision || decision.decision !== 'merge') continue;
         const targetId = String(decision.merge_into || '');
         const target = output.get(targetId);
-        if (!target || targetId === issue.issue_id) continue;
+        if (!target || targetId === issue.issue_id) {
+            audit.push({
+                source_stage: 'adjudication',
+                outcome: 'rejected',
+                reason_code: 'ADJUDICATION_MERGE_TARGET_INVALID',
+                reason: String(decision.reason || '终审合并目标无效，该风险未进入最终结果。'),
+                issue_id: issue.issue_id,
+                title: issue.finding.title,
+                merge_into: targetId,
+            });
+            continue;
+        }
         output.set(targetId, mergeGroundedIssues(target, issue));
+        audit.push({
+            source_stage: 'adjudication',
+            outcome: 'merged',
+            reason_code: 'ADJUDICATION_MERGED',
+            reason: String(decision.reason || '终审判定与目标风险属于同一根因。'),
+            issue_id: issue.issue_id,
+            title: issue.finding.title,
+            merge_into: targetId,
+        });
     }
-    return [...output.values()].slice(0, MAX_GROUNDED_ISSUES);
+    const result = [...output.values()].slice(0, MAX_GROUNDED_ISSUES);
+    Object.defineProperty(result, adjudicationAudit, { value: audit });
+    return result;
 };
 
 const buildHolisticAnalysisResult = ({ plan, issues, audit = {} }) => {
     const findings = issues.map((item) => item.finding);
     const suggestions = issues.map((item) => item.suggestion);
+    const evidenceAudit = asArray(plan.candidates)
+        .map((candidate) => candidate && candidate[candidateEvidenceAudit])
+        .filter(Boolean);
+    const finalAdjudicationAudit = issues[adjudicationAudit] || [];
+    const rejected = [
+        ...evidenceAudit.filter((item) => item.outcome === 'rejected'),
+        ...finalAdjudicationAudit.filter((item) => item.outcome !== 'kept'),
+    ].slice(0, 50);
+    const evidenceRejectedCount = evidenceAudit.filter((item) => item.outcome === 'rejected').length;
+    const adjudicationRejectedCount = finalAdjudicationAudit.filter((item) => item.outcome === 'rejected').length;
+    const mergedCount = finalAdjudicationAudit.filter((item) => item.outcome === 'merged').length;
     return {
         review_mode: 'holistic',
         holistic_review: {
@@ -260,6 +381,9 @@ const buildHolisticAnalysisResult = ({ plan, issues, audit = {} }) => {
             party_alignment: plan.party_alignment,
             candidate_count: plan.candidates.length,
             grounded_count: issues.length,
+            evidence_rejected_count: evidenceRejectedCount,
+            adjudication_rejected_count: adjudicationRejectedCount,
+            merged_count: mergedCount,
             ...audit,
         },
         core_information: { cost_business: [], legal_compliance: [] },
@@ -292,7 +416,7 @@ const buildHolisticAnalysisResult = ({ plan, issues, audit = {} }) => {
                 accepted: suggestions.length,
                 rejected: Math.max(0, plan.candidates.length - suggestions.length),
             },
-            rejected: [],
+            rejected,
         },
     };
 };

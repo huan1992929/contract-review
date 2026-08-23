@@ -45,6 +45,16 @@ const {
     buildHolisticAnalysisResult,
 } = require('./holisticReview');
 const { persistInitialRiskLedger } = require('../initialRiskLedger');
+const {
+    REVIEW_POLICY_VERSION,
+    CORE_REVIEW_TOPICS,
+    knowledgeReleaseFromItems,
+    buildReviewFingerprint,
+    validateFixedTopicCoverage,
+    mergeCoverageCandidates,
+    findCachedReviewResult,
+    storeCachedReviewResult,
+} = require('./reviewStability');
 
 const compactKnowledgeLine = (item, index) => (
     `[${index + 1}] ${item.law || item.title || '思库法务助手知识库'} ${item.clause || ''}：${String(item.content || '').slice(0, 1600)}`
@@ -64,6 +74,16 @@ const runWithConcurrency = async (items, concurrency, worker) => {
     return output;
 };
 
+const mergeRejectedAudit = (...groups) => {
+    const seen = new Set();
+    return groups.flatMap((group) => (Array.isArray(group) ? group : [])).filter((item) => {
+        const key = [item?.issue_id, item?.stage, item?.reason_code, item?.merge_into].map((value) => String(value || '')).join('|');
+        if (!key.replace(/\|/g, '') || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+};
+
 const runHolisticReview = async ({
     plainText,
     template,
@@ -80,7 +100,10 @@ const runHolisticReview = async ({
         ...hardViolations.map((item) => item.description),
         ...businessRuleResult.compliance_findings.map((item) => item.title),
     ];
-    const planningPrompt = `你是思库集团合同审核总审。请通读完整合同，先做交易结构与根风险规划，只输出 JSON，不写修改条款和法律依据。
+    const fixedCoverageText = CORE_REVIEW_TOPICS
+        .map((topic) => `- ${topic.id}：${topic.label}（固定知识查询：${topic.query}）`)
+        .join('\n');
+    const planningPrompt = `你是思库集团合同审核总审。请通读完整合同，先逐项完成固定核心主题覆盖，再补充合同特有的根风险。只输出 JSON，不写修改条款和法律依据。
 
 模板：${template.name}
 合同类型：${contractType}
@@ -89,37 +112,64 @@ const runHolisticReview = async ({
 审查目的：${corePurposes.join('；')}
 已由内部规则单独处理、不得重复：${excludedRules.join('；') || '无'}
 
+固定核心主题（必须逐一输出，不得省略）：
+${fixedCoverageText}
+
 输出结构：
-{"contract_summary":"不超过300字，说明交易、双方角色、价款、交付验收和责任结构","party_alignment":{"thinkpark_role":"甲方/乙方/其他","counterparty_role":"甲方/乙方/其他","scenario":"业务场景","template_fit":"匹配说明"},"candidate_issues":[{"title":"一个根问题","issue_type":"范本差异/合规瑕疵/计算错误/文本错误","severity":"high/medium/low","clause_refs":["条号"],"anchors":["逐字合同原文，跨条款问题可多段"],"missing_control":false,"reason":"结合全文说明实质后果","knowledge_query":"用于思库知识库检索的精确查询"}]}
+{"contract_summary":"不超过300字，说明交易、双方角色、价款、交付验收和责任结构","party_alignment":{"thinkpark_role":"甲方/乙方/其他","counterparty_role":"甲方/乙方/其他","scenario":"业务场景","template_fit":"匹配说明"},"topic_coverage":[{"topic_id":"固定主题ID","status":"risk/covered/not_applicable","reason":"全文判断理由","candidate":{"title":"status=risk时填写一个根问题","issue_type":"范本差异/合规瑕疵/计算错误/文本错误","severity":"high/medium/low","clause_refs":["条号"],"anchors":["逐字合同原文，跨条款问题可多段"],"missing_control":false,"reason":"实质后果","knowledge_query":"可选补充词"}}],"candidate_issues":[{"title":"仅限固定主题之外的合同特有根问题","issue_type":"范本差异/合规瑕疵/计算错误/文本错误","severity":"high/medium/low","clause_refs":["条号"],"anchors":["逐字合同原文"],"missing_control":false,"reason":"结合全文说明实质后果","knowledge_query":"用于思库知识库检索的精确查询"}]}
 
 硬性要求：
 1. 必须基于全文判断，先识别思库实际是付款方、收款方、采购方、供应方或其他角色，不能机械按“甲方/乙方”判风险。
 2. 付款、交付、验收、退款、违约若属于同一交易根因，只生成一个候选问题，并在 anchors 中关联全部相关条款。
 3. 合同其他条款已经覆盖、仅属措辞偏好、一般最佳实践、低概率想象或对思库有利的安排，不得列为风险。
-4. candidate_issues 最多12项，按实质影响排序；anchors 必须逐字来自合同。缺失控制才可 missing_control=true。
-5. 合同中以【修订前原文】和【已有修订意见】标出的内容属于同一待审条款：必须同时评估，但已有修订意见不是已生效合同义务，不得只审核其中一边或把意见当正文重复报风险。
-6. 不引用模型记忆，不输出 markdown。
+4. topic_coverage 必须与上述固定主题一一对应；有实质问题时 status=risk 并填 candidate，已充分覆盖时填 covered，业务确实不涉及时才可填 not_applicable。
+5. candidate_issues 仅用于补充固定主题之外的合同特有问题。全部候选合计最多12项；anchors 必须逐字来自合同。缺失控制才可 missing_control=true。
+6. 合同中以【修订前原文】和【已有修订意见】标出的内容属于同一待审条款：必须同时评估，但已有修订意见不是已生效合同义务，不得只审核其中一边或把意见当正文重复报风险。
+7. 不引用模型记忆，不输出 markdown。
 
 完整合同：
 ${wrapContractContent(plainText)}`;
     const rawPlan = await callJsonLLM(planningPrompt, reviewLlmRequestOptions);
-    const plan = normalizeHolisticPlan(rawPlan, plainText);
+    // 固定主题任一缺失都代表规划器输出不完整，不得把它伪装成“未发现风险”保存。
+    validateFixedTopicCoverage(rawPlan);
+    const mergedPlan = mergeCoverageCandidates(rawPlan);
+    const plan = normalizeHolisticPlan(mergedPlan, plainText);
+    const fixedTopicCoverage = CORE_REVIEW_TOPICS.map((topic) => {
+        const item = Array.isArray(rawPlan?.topic_coverage)
+            ? rawPlan.topic_coverage.find((entry) => entry?.topic_id === topic.id)
+            : null;
+        return {
+            topic_id: topic.id,
+            label: topic.label,
+            status: ['risk', 'covered', 'not_applicable'].includes(item?.status) ? item.status : 'not_reported',
+            reason: String(item?.reason || '').slice(0, 500),
+        };
+    });
     await emitAnalysisProgress(null, contractId, {
         step: 'llm_review',
         status: 'running',
         message: `已完成全文交易结构判断，正在对 ${plan.candidates.length} 个候选根风险逐项核验知识库依据...`,
     });
 
-    const grounded = await runWithConcurrency(plan.candidates, 6, async (candidate) => {
+    const groundingOutcomes = await runWithConcurrency(plan.candidates, 6, async (candidate) => {
         try {
+            const matchedFixedTopics = CORE_REVIEW_TOPICS.filter((topic) => (
+                candidate.knowledge_query.includes(topic.query)
+            ));
             const knowledge = await getRelevantKnowledge({
                 text: `${candidate.knowledge_query}\n${candidate.anchors.join('\n')}`,
                 contractType,
                 reviewPoints,
                 corePurposes,
                 perspective: userPerspective,
+                fixedTopicQueries: matchedFixedTopics,
             }, 8);
-            if (!knowledge.length) return null;
+            if (!knowledge.length) {
+                return {
+                    issue: null,
+                    rejection: { issue_id: candidate.issue_id, title: candidate.title, stage: 'knowledge', reason_code: 'knowledge_not_found' },
+                };
+            }
             const evidencePrompt = `你是思库集团合同审核员。请依据完整合同语境和本次思库法务助手知识库检索结果，核验一个候选根风险并生成可执行修改。只输出 JSON。
 
 全文摘要：${plan.contract_summary}
@@ -140,15 +190,29 @@ ${knowledge.map(compactKnowledgeLine).join('\n')}
 5. 既有修订意见不视为已生效条款，但必须与修订前原文作为一个整体审核；不得只审原文，也不得忽略已有修订对风险的缓解或新增影响。
 6. 不输出 markdown。`;
             const rawIssue = await callJsonLLM(evidencePrompt, reviewLlmRequestOptions);
-            return materializeGroundedIssue({ rawIssue, candidate, knowledge, plainText });
+            const issue = materializeGroundedIssue({ rawIssue, candidate, knowledge, plainText });
+            return { issue, rejection: null };
         } catch (error) {
             console.warn(`[HolisticReview] 候选风险核验失败 ${candidate.issue_id}:`, error.message);
-            return null;
+            return {
+                issue: null,
+                rejection: {
+                    issue_id: candidate.issue_id,
+                    title: candidate.title,
+                    stage: 'evidence',
+                    reason_code: 'evidence_call_failed',
+                    error_code: String(error?.code || error?.name || 'ERROR').slice(0, 120),
+                },
+            };
         }
     });
-    const issues = grounded.filter(Boolean);
+    const issues = groundingOutcomes.map((item) => item?.issue).filter(Boolean);
+    const groundingRejected = groundingOutcomes.map((item) => item?.rejection).filter(Boolean);
     if (!issues.length) {
-        return buildHolisticAnalysisResult({ plan, issues: [], audit: { adjudication: 'no_grounded_issue' } });
+        const result = buildHolisticAnalysisResult({ plan, issues: [], audit: { adjudication: 'no_grounded_issue' } });
+        result.holistic_review.fixed_topic_coverage = fixedTopicCoverage;
+        result.grounding_audit.rejected = mergeRejectedAudit(result.grounding_audit.rejected, groundingRejected);
+        return result;
     }
 
     const adjudicationPrompt = `你是思库集团合同审核终审。请重新通读完整合同，并对已通过知识库核验的风险做最终保留、合并或驳回。只输出 JSON。
@@ -175,7 +239,7 @@ ${knowledge.map(compactKnowledgeLine).join('\n')}
 ${wrapContractContent(plainText)}`;
     const rawAdjudication = await callJsonLLM(adjudicationPrompt, reviewLlmRequestOptions);
     const adjudicated = applyHolisticAdjudication(issues, rawAdjudication);
-    return buildHolisticAnalysisResult({
+    const result = buildHolisticAnalysisResult({
         plan,
         issues: adjudicated,
         audit: {
@@ -183,6 +247,12 @@ ${wrapContractContent(plainText)}`;
             adjudication: 'completed',
         },
     });
+    result.holistic_review.fixed_topic_coverage = fixedTopicCoverage;
+    result.grounding_audit.rejected = mergeRejectedAudit(
+        result.grounding_audit.rejected,
+        groundingRejected,
+    );
+    return result;
 };
 
 // 后台异步执行合同审查（不阻塞 HTTP 响应）
@@ -214,8 +284,11 @@ const runAnalysisInBackground = async (contractId, userId, userPerspective, preA
             // matchTemplate 可能返回混合合同数组,取第一个作为主模板
             template = Array.isArray(matchResult) ? (matchResult[0]?.template || null) : matchResult;
         }
-        const reviewPoints = preAnalysisData.reviewPoints?.length ? preAnalysisData.reviewPoints : template.review_points;
-        const corePurposes = preAnalysisData.core_purposes?.length ? preAnalysisData.core_purposes : template.core_purposes;
+        // 正式全文审核始终使用已发布模板的固定维度。预分析 LLM 的浮动建议
+        // 不再改变核心审核面，否则同一合同的检索 query 与候选风险会随上传次数漂移。
+        const reviewPoints = Array.isArray(template.review_points) ? template.review_points : [];
+        const corePurposes = Array.isArray(template.core_purposes) ? template.core_purposes : [];
+        const reviewLlmRequestOptions = getReviewLlmRequestOptions();
 
         // Step 2: 检索法条与案例依据
         await emitAnalysisProgress(null, contractId, { step: 'knowledge_search', status: 'running', message: '正在检索法条与案例依据...' });
@@ -226,8 +299,53 @@ const runAnalysisInBackground = async (contractId, userId, userPerspective, preA
             reviewPoints,
             corePurposes,
             perspective: userPerspective,
+            fixedTopicQueries: CORE_REVIEW_TOPICS,
         }, 40);
         await emitAnalysisProgress(null, contractId, { step: 'knowledge_search', status: 'completed', message: `法条与案例依据检索已完成（${relevantKnowledge.length} 条）。`, partialResult: { relevant_laws: await annotateKnowledgeUpdates(relevantKnowledge) } });
+
+        const knowledgeReleaseId = knowledgeReleaseFromItems(relevantKnowledge);
+        const reviewFingerprint = buildReviewFingerprint({
+            storagePath: contract.storage_path,
+            plainText,
+            template,
+            contractType: preAnalysisData.contract_type,
+            perspective: userPerspective,
+            knowledgeReleaseId,
+            requestOptions: reviewLlmRequestOptions,
+        });
+        const cachedResult = await findCachedReviewResult(reviewFingerprint.fingerprint);
+        if (cachedResult) {
+            cachedResult.review_reproducibility = {
+                ...(cachedResult.review_reproducibility || {}),
+                policy_version: REVIEW_POLICY_VERSION,
+                fingerprint: reviewFingerprint.fingerprint,
+                logical_text_sha256: reviewFingerprint.descriptor.logical_text_sha256,
+                document_sha256: reviewFingerprint.descriptor.document_sha256,
+                knowledge_release_id: knowledgeReleaseId,
+                cache_hit: true,
+            };
+            await emitAnalysisProgress(null, contractId, { step: 'llm_review', status: 'completed', message: '已命中同一逻辑审核指纹，复用已验证的审核结果。' });
+            await emitAnalysisProgress(null, contractId, { step: 'seal_analysis', status: 'running', message: '正在核验当前文件的印章与签章...' });
+            // 逻辑文本相同的 OOXML 文件仍可能有不同的签章图像，印章结果不跨文件复用。
+            cachedResult.seal_analysis = await analyzeSealAndSignature(contract, plainText);
+            await emitAnalysisProgress(null, contractId, { step: 'seal_analysis', status: 'completed', message: '当前文件印章与签章核验已完成。' });
+            await emitAnalysisProgress(null, contractId, { step: 'finalize', status: 'running', message: '正在保存可复现审核结果...' });
+            await db.transaction(async (trx) => {
+                await trx('contracts').where({ id: contractId }).update({
+                    status: 'Reviewed',
+                    analysis_status: 'reviewed',
+                    analysis_result: JSON.stringify(cachedResult),
+                    analysis_partial_result: JSON.stringify(cachedResult),
+                    pre_analysis_data: JSON.stringify(preAnalysisData),
+                    perspective: userPerspective,
+                });
+                await persistInitialRiskLedger({ trx, contractId, userId, analysisResult: cachedResult });
+            });
+            updateAnalysisJob(contractId, { status: 'completed', result: cachedResult, percent: 100 });
+            await emitAnalysisProgress(null, contractId, { step: 'finalize', status: 'completed', message: '审核结果已保存（稳定指纹命中）。', partialResult: cachedResult });
+            if (getIoInstance()) getIoInstance().to(`contract-${contractId}`).emit('analysis-complete', { results: cachedResult, perspective: userPerspective });
+            return;
+        }
 
         // Step 3: 核验合同主体信息。专属知识库模式下禁止外部 API 和公网搜索。
         const knowledgeBaseOnly = isKnowledgeBaseOnlyMode();
@@ -394,7 +512,6 @@ ${wrapContractContent(plainText)}
 
         const subjectSearchPrompt = knowledgeBaseOnly ? '' : `\n\n主体外部核验证据(优先为第三方企业数据 API 风险画像,部分为 Bing/Baidu 网页搜索回退):\n${companySearchContext || '未识别到可检索的公司主体名称。'}\n\n请额外输出 company_review 字段,结构为 [{"company_name":"公司名称","risk_level":"red/yellow/green","risk_items":[{"type":"类型","detail":"详情","date":"日期"}],"suggestion":"基于风险等级的建议措施","status":"核验状态","evidence_summary":"核验摘要","authenticity":"真实性结论","sources":["URL"]}。红色主体建议要求担保或拒绝签约,黄色主体建议加强资信调查,绿色主体无重大风险。`;
         const contractCharCount = plainText.length;
-        const reviewLlmRequestOptions = getReviewLlmRequestOptions();
         let analysisResult;
         if (!shouldUseSegmentedReview(contractCharCount)) {
             analysisResult = await runHolisticReview({
@@ -594,6 +711,16 @@ ${clause.text}
             name: template.name,
             report_sections: template.report_sections || [],
         };
+        analysisResult.review_reproducibility = {
+            policy_version: REVIEW_POLICY_VERSION,
+            fingerprint: reviewFingerprint.fingerprint,
+            logical_text_sha256: reviewFingerprint.descriptor.logical_text_sha256,
+            document_sha256: reviewFingerprint.descriptor.document_sha256,
+            knowledge_release_id: knowledgeReleaseId,
+            model_settings: reviewFingerprint.descriptor.model_settings,
+            fixed_topic_ids: CORE_REVIEW_TOPICS.map((topic) => topic.id),
+            cache_hit: false,
+        };
         await emitAnalysisProgress(null, contractId, { step: 'llm_review', status: 'completed', message: 'AI 审查结论已生成。' });
 
         // Step 5: 印章与签章核验
@@ -629,6 +756,16 @@ ${clause.text}
                 analysisResult,
             });
         });
+        try {
+            await storeCachedReviewResult({
+                fingerprint: reviewFingerprint.fingerprint,
+                descriptor: reviewFingerprint.descriptor,
+                result: analysisResult,
+            });
+        } catch (cacheError) {
+            // 缓存写入是可复现优化，不应因其短暂失败丢弃本次已完成的审核。
+            console.warn('[ReviewStability] 审核结果缓存写入失败:', cacheError.message);
+        }
 
         updateAnalysisJob(contractId, { status: 'completed', result: analysisResult, percent: 100 });
         await emitAnalysisProgress(null, contractId, { step: 'finalize', status: 'completed', message: '审查结果已保存。', partialResult: analysisResult });

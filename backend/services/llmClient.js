@@ -57,6 +57,7 @@ const createChatCompletion = async (options, requestOptions = {}) => {
             return await getLlmClient().chat.completions.create({
                 model: getRequiredEnv('LLM_MODEL'),
                 ...options,
+                temperature: 0,
             }, {
                 timeout,
                 ...sdkRequestOptions,
@@ -89,6 +90,7 @@ const createVisionCompletion = async (options, requestOptions = {}) => {
             return await getLlmClient().chat.completions.create({
                 model: process.env.VISION_MODEL_NAME || 'Qwen/Qwen2.5-VL-7B-Instruct',
                 ...options,
+                temperature: 0,
             }, {
                 timeout,
                 ...sdkRequestOptions,
