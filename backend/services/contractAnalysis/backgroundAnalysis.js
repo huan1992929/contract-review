@@ -194,17 +194,13 @@ ${knowledge.map(compactKnowledgeLine).join('\n')}
             const issue = materializeGroundedIssue({ rawIssue, candidate, knowledge, plainText });
             return { issue, rejection: null };
         } catch (error) {
-            console.warn(`[HolisticReview] 候选风险核验失败 ${candidate.issue_id}:`, error.message);
-            return {
-                issue: null,
-                rejection: {
-                    issue_id: candidate.issue_id,
-                    title: candidate.title,
-                    stage: 'evidence',
-                    reason_code: 'evidence_call_failed',
-                    error_code: String(error?.code || error?.name || 'ERROR').slice(0, 120),
-                },
-            };
+            // A transport/provider failure is not evidence that the candidate
+            // is safe. Fail the complete review instead of persisting a
+            // deceptively smaller risk set; the user can retry from the same
+            // immutable review fingerprint.
+            error.code = error.code || 'HOLISTIC_EVIDENCE_CALL_FAILED';
+            error.candidateIssueId = candidate.issue_id;
+            throw error;
         }
     });
     const issues = groundingOutcomes.map((item) => item?.issue).filter(Boolean);
