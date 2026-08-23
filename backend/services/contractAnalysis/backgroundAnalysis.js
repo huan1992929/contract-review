@@ -163,6 +163,7 @@ ${wrapContractContent(plainText)}`;
                 corePurposes,
                 perspective: userPerspective,
                 fixedTopicQueries: matchedFixedTopics,
+                fixedQueryContext: `${candidate.knowledge_query}\n${candidate.anchors.join('\n')}`,
             }, 8);
             if (!knowledge.length) {
                 return {

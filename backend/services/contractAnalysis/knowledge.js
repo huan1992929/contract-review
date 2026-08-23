@@ -205,7 +205,11 @@ const getRelevantKnowledge = async (options, limit = 8) => {
             items: await searchThinkParkKnowledge({
                 contractType: options.contractType,
                 perspective: options.perspective,
-                question: String(item.query),
+                // 固定主题保证覆盖稳定；当前候选的原文锚点只用来在该主题内
+                // 精确找到直接范本依据，避免只用宽泛主题导致大量候选被误判无依据。
+                question: [String(item.query), String(options.fixedQueryContext || '')]
+                    .filter(Boolean)
+                    .join('\n'),
             }, Math.max(3, Math.ceil(limit / fixedQueries.length) + 1)),
         })));
         return dedupeKnowledgeWithTrace(batches, limit);
