@@ -83,6 +83,18 @@ test('combines party and six-scenario classification deterministically', () => {
     assert.equal(result.scenario_detection.primary.id, 'client_service');
 });
 
+test('routes ThinkPark buyer software contracts to supplier service despite counterparty labels', () => {
+    const result = analyzePartyAndScenario(
+        '甲方（服务接受方）：思库文化传播集团有限公司。乙方（服务提供方）：北京示例科技有限公司。甲方采购乙方企业AI软件服务，乙方负责系统部署。',
+        { contractType: '企业软件服务协议' },
+    );
+
+    assert.equal(result.party_identification.our_role, 'party_a');
+    assert.equal(result.scenario_detection.primary.id, 'supplier_service');
+    assert.equal(result.scenario_detection.primary.template_ids[0], 'thinkpark_supplier_single_service');
+    assert.equal(result.scenario_detection.candidates.some((item) => item.id === 'client_service'), false);
+});
+
 test('ranks traceable template candidates using scenario and keyword reasons', () => {
     const templates = [
         {

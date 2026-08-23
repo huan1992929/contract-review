@@ -30,7 +30,7 @@ const SCENARIOS = [
     {
         id: 'supplier_service',
         name: '通用供应商服务与采购',
-        keywords: ['供应商', '采购合同', '委托服务', '服务采购', '供货', '承揽', '采购方'],
+        keywords: ['供应商', '采购', '采购合同', '委托服务', '服务采购', '供货', '承揽', '采购方', '服务接受方', '软件服务', '系统部署'],
         templateIds: ['thinkpark_supplier_single_service', 'thinkpark_supplier_framework'],
         preferredRole: 'party_a',
     },
@@ -157,7 +157,12 @@ const scoreScenario = (scenario, text, contractType, ourRole) => {
     const matches = scenario.keywords.filter((keyword) => haystack.includes(keyword.toLowerCase()));
     const typeMatches = scenario.keywords.filter((keyword) => String(contractType || '').toLowerCase().includes(keyword.toLowerCase()));
     let score = matches.length + typeMatches.length * 2;
-    if (scenario.preferredRole && scenario.preferredRole === ourRole && matches.length) score += 1;
+    // 已高置信识别思库甲乙方时，交易方向优先于泛化关键词。否则合同中
+    // 对手方的“服务提供方”会把思库作为采购方的合同误路由到客户模板。
+    if (scenario.preferredRole && ['party_a', 'party_b'].includes(ourRole)) {
+        if (scenario.preferredRole !== ourRole) score = 0;
+        else if (matches.length) score += 2;
+    }
     return {
         id: scenario.id,
         name: scenario.name,
