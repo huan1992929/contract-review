@@ -21,6 +21,10 @@ const db = require('./database');
 const { ensureVectorStore } = require('./services/vectorStore');
 const { hashPassword, verifyPassword } = require('./services/appAuth');
 
+// Every application replica runs the schema verifier. A session-scoped PostgreSQL
+// advisory lock serializes the hasColumn/ALTER sequence across replicas.
+const SCHEMA_ADVISORY_LOCK_ID = 742391104;
+
 async function ensureColumn(tableName, columnName, addColumn) {
   const exists = await db.schema.hasColumn(tableName, columnName);
   if (!exists) {
@@ -31,7 +35,14 @@ async function ensureColumn(tableName, columnName, addColumn) {
 
 async function resetAndRebuildDatabase() {
   console.log('[DB Init] Starting database schema verification and rebuild...');
+  let schemaLockConnection = null;
+  let fatalError = null;
   try {
+    if (Number(db.client.pool?.max || 0) === 1) {
+      throw new Error('DB_POOL_MAX_MUST_BE_AT_LEAST_2_FOR_SCHEMA_ADVISORY_LOCK');
+    }
+    schemaLockConnection = await db.client.acquireConnection();
+    await db.raw('SELECT pg_advisory_lock(?)', [SCHEMA_ADVISORY_LOCK_ID]).connection(schemaLockConnection);
     const hasUsersTable = await db.schema.hasTable('users');
     if (!hasUsersTable) {
         console.log('[DB Init] Creating new `users` table...');
@@ -131,6 +142,99 @@ async function resetAndRebuildDatabase() {
     }
     await ensureColumn('contract_versions', 'oss_key', (table) => table.text('oss_key'));
     await ensureColumn('contract_versions', 'oss_sha256', (table) => table.string('oss_sha256', 64));
+    await ensureColumn('contract_versions', 'parent_version_id', (table) => table.integer('parent_version_id').unsigned().references('id').inTable('contract_versions').onDelete('SET NULL').index());
+    await ensureColumn('contract_versions', 'document_view', (table) => table.string('document_view', 32));
+    await ensureColumn('contract_versions', 'source_party', (table) => table.string('source_party', 32));
+    await ensureColumn('contract_versions', 'content_sha256', (table) => table.string('content_sha256', 64));
+
+    // Refuse to hide legacy corruption behind an index creation failure. The named
+    // unique index is idempotent and becomes the final concurrency guard after the
+    // contract-level write lock used by the version service.
+    const duplicateContractVersions = await db('contract_versions')
+      .select('contract_id', 'version_no')
+      .count({ duplicate_count: '*' })
+      .groupBy('contract_id', 'version_no')
+      .havingRaw('COUNT(*) > 1')
+      .limit(10);
+    if (duplicateContractVersions.length > 0) {
+      throw new Error(`CONTRACT_VERSION_DUPLICATES:${JSON.stringify(duplicateContractVersions)}`);
+    }
+    await db.raw([
+      'CREATE UNIQUE INDEX IF NOT EXISTS contract_versions_contract_version_no_uidx',
+      'ON contract_versions (contract_id, version_no)',
+    ].join(' '));
+
+    // 合同谈判轮次：仅做加法式扩展。旧合同在首次访问轮次接口时懒初始化为第 0 轮。
+    const hasContractRoundsTable = await db.schema.hasTable('contract_rounds');
+    if (!hasContractRoundsTable) {
+      console.log('[DB Init] Creating new `contract_rounds` table...');
+      await db.schema.createTable('contract_rounds', (table) => {
+        table.increments('id').primary();
+        table.integer('contract_id').unsigned().notNullable().references('id').inTable('contracts').onDelete('CASCADE');
+        table.integer('round_no').notNullable();
+        table.integer('parent_round_id').unsigned().references('id').inTable('contract_rounds').onDelete('SET NULL');
+        table.integer('base_version_id').unsigned().references('id').inTable('contract_versions').onDelete('SET NULL');
+        table.integer('working_version_id').unsigned().references('id').inTable('contract_versions').onDelete('SET NULL');
+        table.string('source_party', 32).notNullable().defaultTo('system');
+        table.string('baseline_view', 32).notNullable().defaultTo('proposed');
+        table.string('status', 32).notNullable().defaultTo('draft');
+        table.integer('created_by').unsigned().references('id').inTable('users').onDelete('SET NULL');
+        table.timestamp('frozen_at');
+        table.timestamps(true, true);
+        table.unique(['contract_id', 'round_no']);
+        table.index(['contract_id', 'status']);
+      });
+    }
+    await ensureColumn('contract_versions', 'round_id', (table) => table.integer('round_id').unsigned().references('id').inTable('contract_rounds').onDelete('SET NULL').index());
+
+    // 稳定条款身份：定位字段独立于 DOCX 书签，书签仅保留为可重建的界面导航信息。
+    const hasContractClausesTable = await db.schema.hasTable('contract_clauses');
+    if (!hasContractClausesTable) {
+      console.log('[DB Init] Creating new `contract_clauses` table...');
+      await db.schema.createTable('contract_clauses', (table) => {
+        table.increments('id').primary();
+        table.integer('contract_id').unsigned().notNullable().references('id').inTable('contracts').onDelete('CASCADE');
+        table.string('clause_key', 128).notNullable();
+        table.string('normalized_clause_no', 128);
+        table.text('heading_path');
+        table.string('text_hash', 64);
+        table.string('structure_fingerprint', 64);
+        table.jsonb('metadata').notNullable().defaultTo('{}');
+        table.timestamps(true, true);
+        table.unique(['contract_id', 'clause_key']);
+        table.index(['contract_id', 'normalized_clause_no']);
+      });
+    }
+
+    // 条款修订账本：DOCX 只承载当前轮红线，完整 supersedes/base 链保存在数据库中。
+    const hasClauseRevisionsTable = await db.schema.hasTable('clause_revisions');
+    if (!hasClauseRevisionsTable) {
+      console.log('[DB Init] Creating new `clause_revisions` table...');
+      await db.schema.createTable('clause_revisions', (table) => {
+        table.increments('id').primary();
+        table.integer('contract_id').unsigned().notNullable().references('id').inTable('contracts').onDelete('CASCADE');
+        table.integer('round_id').unsigned().notNullable().references('id').inTable('contract_rounds').onDelete('CASCADE');
+        table.integer('clause_id').unsigned().notNullable().references('id').inTable('contract_clauses').onDelete('CASCADE');
+        table.integer('base_revision_id').unsigned().references('id').inTable('clause_revisions').onDelete('SET NULL');
+        table.integer('supersedes_revision_id').unsigned().references('id').inTable('clause_revisions').onDelete('SET NULL');
+        table.integer('version_id').unsigned().references('id').inTable('contract_versions').onDelete('SET NULL');
+        table.string('revision_key', 128).notNullable();
+        table.text('before_text').notNullable();
+        table.text('after_text').notNullable();
+        table.string('before_hash', 64);
+        table.string('after_hash', 64);
+        table.string('author_type', 32).notNullable().defaultTo('user');
+        table.string('author_name', 256);
+        table.string('source_party', 32).notNullable().defaultTo('thinkpark');
+        table.string('source_issue_id', 128);
+        table.string('status', 32).notNullable().defaultTo('pending');
+        table.jsonb('ooxml_revision_ids').notNullable().defaultTo('[]');
+        table.jsonb('metadata').notNullable().defaultTo('{}');
+        table.timestamps(true, true);
+        table.unique(['contract_id', 'revision_key']);
+        table.index(['round_id', 'clause_id', 'status']);
+      });
+    }
 
     // 增量审查运行记录：只做扩展式迁移，旧 analysis_result.incremental_reviews 继续保留。
     const hasReviewRunsTable = await db.schema.hasTable('review_runs');
@@ -329,9 +433,21 @@ async function resetAndRebuildDatabase() {
     await ensureColumn('vector_documents', 'effective_date', (table) => table.date('effective_date'));
 
   } catch (error) {
+    fatalError = error;
     console.error("[DB Init] FATAL: Failed to rebuild database schema:", error);
-    process.exit(1); // Exit if we can't build the database
+  } finally {
+    if (schemaLockConnection) {
+      try {
+        await db.raw('SELECT pg_advisory_unlock(?)', [SCHEMA_ADVISORY_LOCK_ID]).connection(schemaLockConnection);
+      } catch (unlockError) {
+        fatalError ||= unlockError;
+        console.error('[DB Init] FATAL: Failed to release schema advisory lock:', unlockError);
+      } finally {
+        await db.client.releaseConnection(schemaLockConnection);
+      }
+    }
   }
+  if (fatalError) process.exit(1); // Release the session lock before terminating.
 }
 
 // Rename the exported function for clarity

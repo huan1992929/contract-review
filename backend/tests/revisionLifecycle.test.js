@@ -14,6 +14,8 @@ const {
     detectRevisionGroupStatusInXml,
     syncRevisionGroupsFromDocx,
     resolveParagraphMatch,
+    preflightTextReplacementInDocumentXml,
+    preflightTextReplacementsInDocumentXml,
     replaceTextInDocumentXml,
     replaceTextInDocx,
     replaceTextsInDocxAtomic,
@@ -150,7 +152,7 @@ test('whole-paragraph review revision preserves paired navigation and risk bookm
     assert.equal(paragraphText(accepted.xml), suggested);
 });
 
-test('target paragraphs with comments or pending revisions remain protected', () => {
+test('target paragraphs with comments or human pending revisions return precise protection errors', () => {
     const original = '2.2 甲方应在签署后支付全部费用。';
     const suggested = '2.2 甲方应在验收合格后支付全部费用。';
     const commentParagraph = `<w:p><w:commentRangeStart w:id="7"/><w:r><w:t>${original}</w:t></w:r><w:commentRangeEnd w:id="7"/></w:p>`;
@@ -158,12 +160,30 @@ test('target paragraphs with comments or pending revisions remain protected', ()
 
     assert.throws(
         () => replaceTextInDocumentXml(makeDocumentXml(commentParagraph), original, suggested, [], { mode: 'review' }),
-        /DOCX_COMPLEX_PARAGRAPH_UNSUPPORTED/,
+        /DOCX_COMMENTED_PARAGRAPH_UNSUPPORTED/,
     );
     assert.throws(
         () => replaceTextInDocumentXml(makeDocumentXml(revisionParagraph), original, suggested, [], { mode: 'review' }),
-        /DOCX_COMPLEX_PARAGRAPH_UNSUPPORTED/,
+        /DOCX_HUMAN_REVISION_CONFLICT/,
     );
+});
+
+test('preflight classifies clean, human-conflict and unlinked system-revision targets', () => {
+    const original = '2.2 甲方应在签署后支付全部费用。';
+    const suggested = '2.2 甲方应在验收合格后支付全部费用。';
+    const clean = makeDocumentXml(`<w:p><w:r><w:t>${original}</w:t></w:r></w:p>`);
+    const human = makeDocumentXml(`<w:p><w:ins w:id="8" w:author="对方"><w:r><w:t>${original}</w:t></w:r></w:ins></w:p>`);
+    const system = makeDocumentXml(`<w:p><w:ins w:id="9" w:author="AI审查"><w:r><w:t>${original}</w:t></w:r></w:ins></w:p>`);
+
+    assert.equal(preflightTextReplacementInDocumentXml(clean, original, suggested, [], {
+        mode: 'review', author: 'AI审查',
+    }).status, 'safe_new');
+    assert.equal(preflightTextReplacementInDocumentXml(human, original, suggested, [], {
+        mode: 'review', author: 'AI审查',
+    }).status, 'human_conflict');
+    assert.equal(preflightTextReplacementInDocumentXml(system, original, suggested, [], {
+        mode: 'review', author: 'AI审查',
+    }).status, 'needs_new_round');
 });
 
 test('multi-paragraph replacement fails closed instead of flattening lines into one paragraph', () => {
@@ -172,6 +192,22 @@ test('multi-paragraph replacement fails closed instead of flattening lines into 
         () => resolveParagraphMatch(documentXml, '1.1 原条款。', '1.1 新条款。\n1.2 新增条款。'),
         /DOCX_MULTI_PARAGRAPH_REPLACEMENT_UNSUPPORTED/,
     );
+});
+
+test('original text spanning DOCX paragraphs is classified as unsupported', () => {
+    const documentXml = makeDocumentXml([
+        '<w:p><w:r><w:t>1.1 甲方应在30日内付款。</w:t></w:r></w:p>',
+        '<w:p><w:r><w:t>1.2 乙方应在5日内开具发票。</w:t></w:r></w:p>',
+    ].join(''));
+    const result = preflightTextReplacementInDocumentXml(
+        documentXml,
+        '1.1 甲方应在30日内付款。1.2 乙方应在5日内开具发票。',
+        '1.1 甲方应在15日内付款，乙方应同时开具发票。',
+        [],
+        { mode: 'review' },
+    );
+    assert.equal(result.status, 'unsupported');
+    assert.equal(result.code, 'DOCX_CROSS_PARAGRAPH_REPLACEMENT_UNSUPPORTED');
 });
 
 test('duplicate paragraph text remains ambiguous and cannot be auto-replaced', () => {
@@ -242,6 +278,104 @@ test('successful batch writes all revision groups in one readable DOCX', () => {
         assert.equal((xml.match(/<w:ins\b/g) || []).length, 2);
         assert.equal(paragraphText(xml).includes('1.1 甲方应在15日内付款。'), true);
         assert.equal(paragraphText(xml).includes('2.1 乙方应提供合法有效发票。'), true);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test('batch preflight detects overlapping and same-paragraph edits before writing', () => {
+    const paragraph = '4.1 甲方应在30日内付款，乙方应在5日内开具发票。';
+    const documentXml = makeDocumentXml(`<w:p><w:r><w:t>${paragraph}</w:t></w:r></w:p>`);
+    const overlap = preflightTextReplacementsInDocumentXml(documentXml, [
+        {
+            originalText: '甲方应在30日内付款',
+            suggestedText: '甲方应在15日内付款',
+            options: { mode: 'review', revisionGroupId: 'overlap-1' },
+        },
+        {
+            originalText: '30日内付款，乙方应在5日内开具发票',
+            suggestedText: '15日内付款，乙方应在3日内开具发票',
+            options: { mode: 'review', revisionGroupId: 'overlap-2' },
+        },
+    ]);
+    assert.equal(overlap.results[0].code, 'DOCX_BATCH_RANGE_OVERLAP');
+    assert.equal(overlap.results[1].code, 'DOCX_BATCH_RANGE_OVERLAP');
+
+    const disjoint = preflightTextReplacementsInDocumentXml(documentXml, [
+        {
+            originalText: '甲方应在30日内付款',
+            suggestedText: '甲方应在15日内付款',
+            options: { mode: 'review', revisionGroupId: 'disjoint-1' },
+        },
+        {
+            originalText: '乙方应在5日内开具发票',
+            suggestedText: '乙方应在3日内开具发票',
+            options: { mode: 'review', revisionGroupId: 'disjoint-2' },
+        },
+    ]);
+    assert.equal(disjoint.results[0].code, 'DOCX_BATCH_SAME_PARAGRAPH_UNSUPPORTED');
+    assert.equal(disjoint.results[1].code, 'DOCX_BATCH_SAME_PARAGRAPH_UNSUPPORTED');
+
+    const threeWay = preflightTextReplacementsInDocumentXml(documentXml, [
+        ['甲方应在30日内付款', '甲方应在15日内付款'],
+        ['乙方应在5日内开具发票', '乙方应在3日内开具发票'],
+        ['4.1', '4.1'],
+    ].map(([originalText, suggestedText], index) => ({
+        originalText,
+        suggestedText,
+        options: { mode: 'review', revisionGroupId: `three-way-${index}` },
+    })));
+    assert.equal(threeWay.results.length, 3);
+    assert.equal(threeWay.results.every((item) => item.code === 'DOCX_BATCH_RANGE_OVERLAP'), true);
+    assert.equal(documentXml, makeDocumentXml(`<w:p><w:r><w:t>${paragraph}</w:t></w:r></w:p>`));
+});
+
+test('atomic batch supersedes an existing pending group and writes another paragraph from one plan', () => {
+    const firstOriginal = '1.1 甲方应在30日内付款。';
+    const firstSuggestion = '1.1 甲方应在15日内付款。';
+    const latestSuggestion = '1.1 甲方应在10日内付款。';
+    const secondOriginal = '2.1 乙方应提供发票。';
+    const first = replaceTextWithRevisionGroup(
+        `<w:p><w:r><w:t>${firstOriginal}</w:t></w:r></w:p>`,
+        { start: 0, end: firstOriginal.length }, firstSuggestion,
+        { revisionId: 100, author: 'AI审查', revisionGroupId: 'old-batch-group', suggestionId: 'stable-batch-1' },
+    );
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'supersede-batch-'));
+    const filePath = path.join(tempDir, 'contract.docx');
+    try {
+        writeMinimalDocx(filePath, makeDocumentXml([
+            first.xml,
+            `<w:p><w:r><w:t>${secondOriginal}</w:t></w:r></w:p>`,
+        ].join('')));
+        const result = replaceTextsInDocxAtomic(filePath, [
+            {
+                originalText: firstOriginal,
+                suggestedText: latestSuggestion,
+                suggestionIndex: 0,
+                options: {
+                    mode: 'review', author: 'AI审查', revisionGroupId: 'new-batch-group',
+                    suggestionId: 'stable-batch-1', previousRevisionGroup: first.revisionGroup,
+                    previousApplicationStatus: 'pending_review',
+                },
+            },
+            {
+                originalText: secondOriginal,
+                suggestedText: '2.1 乙方应提供合法有效发票。',
+                suggestionIndex: 1,
+                options: {
+                    mode: 'review', author: 'AI审查', revisionGroupId: 'new-batch-group-2',
+                    suggestionId: 'stable-batch-2',
+                },
+            },
+        ]);
+        const xml = new AdmZip(filePath).getEntry('word/document.xml').getData().toString('utf8');
+        assert.equal(result.results[0].planningStatus, 'safe_supersede');
+        assert.equal(result.results[1].planningStatus, 'safe_new');
+        assert.equal((xml.match(/<w:del\b/g) || []).length, 2);
+        assert.equal((xml.match(/<w:ins\b/g) || []).length, 2);
+        assert.equal(xml.includes('w:id="100"'), false);
+        assert.equal(xml.includes('w:id="101"'), false);
+        assert.equal(paragraphText(xml).includes(latestSuggestion), true);
     } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
@@ -351,6 +485,91 @@ test('reapplying a rejected suggestion removes its stale revision pair before cr
     }
 });
 
+test('pending system revision can be safely superseded without nested tracked changes', () => {
+    const original = '2.2 甲方应在签署后5个工作日内支付全部费用。';
+    const firstSuggestion = '2.2 甲方应在验收合格后5个工作日内支付全部费用。';
+    const latestSuggestion = '2.2 甲方应在验收合格且收到合法发票后10个工作日内支付全部费用。';
+    const first = replaceTextWithRevisionGroup(
+        `<w:p><w:r><w:t>${original}</w:t></w:r></w:p>`,
+        { start: 0, end: original.length },
+        firstSuggestion,
+        {
+            revisionId: 80,
+            author: 'AI审查',
+            revisionGroupId: 'same-round-group-1',
+            suggestionId: 'stable-suggestion-2',
+        },
+    );
+    const documentXml = makeDocumentXml(first.xml);
+    const options = {
+        mode: 'review',
+        author: 'AI审查',
+        revisionGroupId: 'same-round-group-2',
+        suggestionId: 'stable-suggestion-2',
+        previousRevisionGroup: first.revisionGroup,
+        previousApplicationStatus: 'pending_review',
+    };
+
+    const preflight = preflightTextReplacementInDocumentXml(
+        documentXml, original, latestSuggestion, [], options,
+    );
+    assert.equal(preflight.status, 'safe_supersede');
+
+    const replaced = replaceTextInDocumentXml(documentXml, original, latestSuggestion, [], options);
+    assert.equal(replaced.planningStatus, 'safe_supersede');
+    assert.equal(replaced.supersededRevisionGroup.group_id, 'same-round-group-1');
+    assert.equal(replaced.revisionGroup.group_id, 'same-round-group-2');
+    assert.equal(replaced.revisionGroup.original_text, original);
+    assert.equal(replaced.revisionGroup.suggested_text, latestSuggestion);
+    assert.equal((replaced.xml.match(/<w:del\b/g) || []).length, 1);
+    assert.equal((replaced.xml.match(/<w:ins\b/g) || []).length, 1);
+    assert.equal(replaced.xml.includes('w:id="80"'), false);
+    assert.equal(replaced.xml.includes('w:id="81"'), false);
+    assert.equal(paragraphText(replaced.xml), latestSuggestion);
+});
+
+test('pending supersede fails closed when revision author or content does not match persisted group', () => {
+    const original = '3.1 乙方应于10日内交付。';
+    const firstSuggestion = '3.1 乙方应于5日内交付。';
+    const latestSuggestion = '3.1 乙方应于3日内交付。';
+    const first = replaceTextWithRevisionGroup(
+        `<w:p><w:r><w:t>${original}</w:t></w:r></w:p>`,
+        { start: 0, end: original.length }, firstSuggestion,
+        { revisionId: 90, author: '对方', revisionGroupId: 'foreign-group', suggestionId: 'stable-3' },
+    );
+    const options = {
+        mode: 'review',
+        author: 'AI审查',
+        suggestionId: 'stable-3',
+        previousRevisionGroup: { ...first.revisionGroup, author: 'AI审查' },
+        previousApplicationStatus: 'pending_review',
+    };
+    const before = makeDocumentXml(first.xml);
+    const preflight = preflightTextReplacementInDocumentXml(before, original, latestSuggestion, [], options);
+    assert.equal(preflight.status, 'human_conflict');
+    assert.equal(preflight.code, 'REVISION_GROUP_AUTHOR_MISMATCH');
+    assert.throws(
+        () => replaceTextInDocumentXml(before, original, latestSuggestion, [], options),
+        /REVISION_GROUP_AUTHOR_MISMATCH/,
+    );
+    assert.equal(before, makeDocumentXml(first.xml));
+
+    const systemFirst = replaceTextWithRevisionGroup(
+        `<w:p><w:r><w:t>${original}</w:t></w:r></w:p>`,
+        { start: 0, end: original.length }, firstSuggestion,
+        { revisionId: 92, author: 'AI审查', revisionGroupId: 'system-group', suggestionId: 'stable-3' },
+    );
+    const contentMismatch = preflightTextReplacementInDocumentXml(
+        makeDocumentXml(systemFirst.xml), original, latestSuggestion, [],
+        {
+            ...options,
+            previousRevisionGroup: { ...systemFirst.revisionGroup, original_text: `${original}被篡改` },
+        },
+    );
+    assert.equal(contentMismatch.status, 'needs_new_round');
+    assert.equal(contentMismatch.code, 'REVISION_GROUP_CONTENT_MISMATCH');
+});
+
 test('accepting a replacement revision removes original and revision wrappers', () => {
     const revised = replaceTextWithRevisionGroup(baseParagraph, { start: 4, end: 17 }, '甲方应在60日内完成审核。', {
         revisionId: 30,
@@ -427,6 +646,40 @@ test('real DOCX lifecycle atomically resolves revision pair and remains a readab
         assert.equal(paragraphText(xml), '4.6 甲方应在60日内完成审核。');
         assert.ok(reopened.getEntry('[Content_Types].xml'));
         assert.ok(reopened.getEntry('_rels/.rels'));
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test('one root risk resolves every linked revision group before becoming accepted', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'linked-revision-resolution-'));
+    const filePath = path.join(tempDir, 'linked.docx');
+    try {
+        writeMinimalDocx(filePath, makeDocumentXml([
+            '<w:p><w:r><w:t>2.1 甲方一次性支付全部价款。</w:t></w:r></w:p>',
+            '<w:p><w:r><w:t>3.1 乙方收款后开始部署。</w:t></w:r></w:p>',
+        ].join('')));
+        const batch = replaceTextsInDocxAtomic(filePath, [
+            {
+                originalText: '2.1 甲方一次性支付全部价款。',
+                suggestedText: '2.1 甲方分阶段支付价款。',
+                suggestionIndex: 0,
+                options: { mode: 'review', revisionGroupId: 'linked-payment', suggestionId: 'root-risk' },
+            },
+            {
+                originalText: '3.1 乙方收款后开始部署。',
+                suggestedText: '3.1 乙方签约后开始部署。',
+                suggestionIndex: 0,
+                options: { mode: 'review', revisionGroupId: 'linked-deploy', suggestionId: 'root-risk' },
+            },
+        ]);
+        const groups = batch.results.map((result) => result.revisionGroup);
+        assert.equal(groups.length, 2);
+        for (const group of groups) resolveRevisionGroupInDocx(filePath, group, 'accept');
+        const xml = new AdmZip(filePath).getEntry('word/document.xml').getData().toString('utf8');
+        assert.equal((xml.match(/<w:(?:ins|del)\b/g) || []).length, 0);
+        assert.match(paragraphText(xml), /甲方分阶段支付价款/);
+        assert.match(paragraphText(xml), /乙方签约后开始部署/);
     } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
     }

@@ -12,7 +12,7 @@ export function useReviewActions(state, editor, helpers) {
         executeEditorMethod, ensureEditorReady, findTextRangeByCandidates,
         buildSuggestionCandidates, buildReplacementCandidates, replaceTextInEditorFinal, previewSuggestion,
         appendClauseInEditorFinal, scheduleForceSave, forceSaveCurrentDocument,
-        reloadEditorConfig, ensureReviewApplyMode,
+        reloadEditorConfig, ensureReviewApplyMode, replaceTextOnServer,
     } = editor;
     const { suggestionOriginal, suggestionText, suggestionTitle, isMissingClauseSuggestion } = helpers;
 
@@ -20,7 +20,197 @@ export function useReviewActions(state, editor, helpers) {
     const diffItems = ref([]);
     const diffLoading = ref(false);
     const exportingDocument = ref(false);
+    const batchPreflightLoading = ref(false);
+    const batchPreflightResults = ref([]);
     let lastStatusEditorKey = '';
+
+    const PREFLIGHT_STATUS = Object.freeze({
+        SAFE_NEW: 'safe_new',
+        SAFE_SUPERSEDE: 'safe_supersede',
+        NEEDS_NEW_ROUND: 'needs_new_round',
+        HUMAN_CONFLICT: 'human_conflict',
+        UNSUPPORTED: 'unsupported',
+        FAILED: 'preflight_failed',
+    });
+    const PREFLIGHT_SAFE = new Set([PREFLIGHT_STATUS.SAFE_NEW, PREFLIGHT_STATUS.SAFE_SUPERSEDE]);
+    const preflightStatusLabel = (status) => ({
+        safe_new: '可安全新增修订',
+        safe_supersede: '可更新本轮建议',
+        needs_new_round: '需建立下一轮修订',
+        human_conflict: '存在人工或对方修订冲突',
+        unsupported: '当前文档结构不支持自动修订',
+        preflight_failed: '修订预检失败',
+    }[status] || '修订状态未知');
+    const preflightDefaultMessage = (status) => ({
+        safe_new: '已确认目标条款可安全生成新的审阅修订。',
+        safe_supersede: '已识别本轮系统修订，将以最新建议更新，原历史仍保留。',
+        needs_new_round: '该条款已进入上一轮或对方回稿，请先建立新的谈判轮次。',
+        human_conflict: '目标与人工或对方待审修订重叠，请在左侧文档确认后再处理。',
+        unsupported: '目标包含跨段、复杂域或无法唯一定位的结构，本次不会改动合同。',
+        preflight_failed: '无法确认本次写入是否安全，已停止修订，请稍后重试。',
+    }[status] || '本次修订已停止。');
+    const normalizePreflightStatus = (value) => {
+        const status = String(value || '').trim().toLowerCase().replace(/-/g, '_');
+        if (['safe', 'new', 'safe_to_apply'].includes(status)) return PREFLIGHT_STATUS.SAFE_NEW;
+        if (['supersede', 'safe_update', 'same_round'].includes(status)) return PREFLIGHT_STATUS.SAFE_SUPERSEDE;
+        if (['new_round', 'next_round'].includes(status)) return PREFLIGHT_STATUS.NEEDS_NEW_ROUND;
+        if (['conflict', 'manual_conflict', 'counterparty_conflict'].includes(status)) return PREFLIGHT_STATUS.HUMAN_CONFLICT;
+        if (['not_supported', 'blocked', 'ambiguous'].includes(status)) return PREFLIGHT_STATUS.UNSUPPORTED;
+        return Object.values(PREFLIGHT_STATUS).includes(status) ? status : PREFLIGHT_STATUS.UNSUPPORTED;
+    };
+    const isRevisionPreflightSafe = (result) => PREFLIGHT_SAFE.has(
+        normalizePreflightStatus(typeof result === 'string' ? result : result?.status),
+    );
+
+    const revisionPreflightEntries = (item, suggestionIndex) => {
+        const linked = Array.isArray(item?.linked_changes)
+            ? item.linked_changes.filter((change) => (change?.operation === 'append' || change?.current_clause || change?.original_text)
+                && change?.suggested_text)
+            : [];
+        const changes = linked.length ? linked : [item];
+        return changes.map((change, changeIndex) => {
+            const operation = change?.operation === 'append' || (changes.length === 1 && isMissingClauseSuggestion(item))
+                ? 'append'
+                : 'replace';
+            const originalText = change?.current_clause || change?.original_text || suggestionOriginal(item) || '';
+            const suggestedText = change?.suggested_text || suggestionText(item) || '';
+            return {
+                suggestionIndex,
+                changeIndex,
+                operation,
+                suggestionId: item?.revision_group?.suggestion_id || item?.suggestion_id || item?.id || '',
+                revisionGroup: item?.revision_group || undefined,
+                title: suggestionTitle(item, suggestionIndex),
+                originalText,
+                suggestedText,
+                originalCandidates: operation === 'replace'
+                    ? buildReplacementCandidates(originalText, change || item)
+                    : [],
+                anchorHint: change?.anchor_hint || change?.anchorHint || item?.anchor_hint || item?.anchorHint || '',
+                targetClauseNo: change?.target_clause_no || change?.targetClauseNo || item?.target_clause_no || item?.targetClauseNo || '',
+                targetHeading: change?.target_heading || change?.targetHeading || item?.target_heading || item?.targetHeading
+                    || item?.parent_clause || item?.target_section || item?.section_title || '',
+            };
+        });
+    };
+
+    const normalizePreflightResults = (responseData, entries) => {
+        const rawResults = Array.isArray(responseData?.results)
+            ? responseData.results
+            : (Array.isArray(responseData?.items) ? responseData.items : []);
+        return rawResults.map((result, resultIndex) => {
+            const requestIndex = Number(result.requestIndex ?? result.request_index ?? result.index ?? resultIndex);
+            const entry = entries[Number.isInteger(requestIndex) ? requestIndex : resultIndex] || {};
+            const suggestionIndex = Number(result.suggestionIndex ?? result.suggestion_index ?? entry.suggestionIndex);
+            const status = normalizePreflightStatus(
+                result.status ?? result.classification ?? result.outcome ?? result.preflightStatus ?? result.preflight_status,
+            );
+            return {
+                ...result,
+                requestIndex,
+                suggestionIndex,
+                changeIndex: Number(result.changeIndex ?? result.change_index ?? entry.changeIndex ?? 0),
+                operation: result.operation || entry.operation || 'replace',
+                status,
+                code: result.code || result.errorCode || result.error_code || '',
+                message: result.message || result.reason || result.error || preflightDefaultMessage(status),
+            };
+        });
+    };
+
+    const collapsePreflightResults = (results, pendingItems) => pendingItems.map(({ item, index }) => {
+        const childResults = results.filter((result) => result.suggestionIndex === index);
+        const statuses = childResults.map((result) => result.status);
+        const operations = new Set(childResults.map((result) => result.operation));
+        let status = PREFLIGHT_STATUS.UNSUPPORTED;
+        if (operations.size > 1 || (operations.has('append') && childResults.length > 1)) {
+            status = PREFLIGHT_STATUS.UNSUPPORTED;
+            childResults.push({
+                status,
+                message: '同一根风险同时包含新增与替换，当前不支持拆分写入，请合并为一个可原子处理的建议。',
+            });
+        } else if (statuses.length && statuses.every((value) => PREFLIGHT_SAFE.has(value))) {
+            status = statuses.includes(PREFLIGHT_STATUS.SAFE_SUPERSEDE)
+                ? PREFLIGHT_STATUS.SAFE_SUPERSEDE
+                : PREFLIGHT_STATUS.SAFE_NEW;
+        } else {
+            status = [PREFLIGHT_STATUS.HUMAN_CONFLICT, PREFLIGHT_STATUS.NEEDS_NEW_ROUND, PREFLIGHT_STATUS.UNSUPPORTED]
+                .find((value) => statuses.includes(value)) || PREFLIGHT_STATUS.UNSUPPORTED;
+        }
+        const messages = [...new Set(childResults.map((result) => result.message).filter(Boolean))];
+        const summary = {
+            suggestionIndex: index,
+            title: suggestionTitle(item, index),
+            status,
+            label: preflightStatusLabel(status),
+            message: messages.join('；') || preflightDefaultMessage(status),
+            results: childResults,
+        };
+        item._revisionPreflight = summary;
+        delete item._revisionApplyError;
+        return summary;
+    });
+
+    const preflightReviewSuggestions = async (pendingItems, { save = true } = {}) => {
+        if (!pendingItems.length) return [];
+        if (reviewApplyMode.value !== 'review') {
+            const entries = pendingItems.flatMap(({ item, index }) => revisionPreflightEntries(item, index));
+            return collapsePreflightResults(entries.map((entry, requestIndex) => ({
+                ...entry,
+                requestIndex,
+                status: PREFLIGHT_STATUS.SAFE_NEW,
+                message: preflightDefaultMessage(PREFLIGHT_STATUS.SAFE_NEW),
+            })), pendingItems);
+        }
+        if (!await ensureReviewApplyMode()) throw new Error('EDITOR_REVIEW_MODE_NOT_READY');
+        if (save) {
+            const saveAck = await forceSaveCurrentDocument(true);
+            if (!saveAck?.saved) throw new Error('ONLYOFFICE_SAVE_NOT_CONFIRMED');
+        }
+        const entries = pendingItems.flatMap(({ item, index }) => revisionPreflightEntries(item, index));
+        const response = await api.preflightContractRevisions(contract.id, {
+            suggestions: entries,
+            mode: 'review',
+            expectedDocumentKey: contract.editorConfig?.document?.key,
+            expectedSha256: contract.confirmedOssSha256 || undefined,
+        });
+        const results = normalizePreflightResults(response.data, entries);
+        if (results.length !== entries.length) {
+            throw new Error('REVISION_PREFLIGHT_INCOMPLETE');
+        }
+        return collapsePreflightResults(results, pendingItems);
+    };
+
+    const preflightAllSuggestions = async () => {
+        const pendingItems = (reviewData.modification_suggestions || [])
+            .map((item, index) => ({ item, index }))
+            .filter(({ item }) => item && !isSuggestionEffective(item));
+        batchPreflightLoading.value = true;
+        try {
+            batchPreflightResults.value = await preflightReviewSuggestions(pendingItems);
+            return batchPreflightResults.value;
+        } catch (error) {
+            const message = error.response?.data?.error || error.response?.data?.message
+                || (error.message === 'ONLYOFFICE_SAVE_NOT_CONFIRMED'
+                    ? '文档尚未保存完成，本次预检已停止。'
+                    : '修订预检服务失败，本次不会改动合同。');
+            batchPreflightResults.value = pendingItems.map(({ item, index }) => {
+                const result = {
+                    suggestionIndex: index,
+                    title: suggestionTitle(item, index),
+                    status: PREFLIGHT_STATUS.FAILED,
+                    label: preflightStatusLabel(PREFLIGHT_STATUS.FAILED),
+                    message,
+                    results: [],
+                };
+                item._revisionPreflight = result;
+                return result;
+            });
+            return batchPreflightResults.value;
+        } finally {
+            batchPreflightLoading.value = false;
+        }
+    };
 
     const addDocComment = async (text, comment, item = {}) => {
         if (!text) {
@@ -66,10 +256,9 @@ export function useReviewActions(state, editor, helpers) {
 
     const isSuggestionPendingReview = (item) => suggestionApplicationStatus(item) === 'pending_review';
     const isSuggestionEffective = (item) => ['accepted', 'applied'].includes(suggestionApplicationStatus(item));
-    // Retain the existing public helper name for batch filtering. "Applied"
-    // here means no further insertion action is available: pending revisions
-    // must first be accepted or rejected inside OnlyOffice.
-    const isSuggestionApplied = (item) => isSuggestionPendingReview(item) || isSuggestionEffective(item);
+    // Pending system revisions remain actionable: preflight decides whether the
+    // latest proposal can safely supersede the current same-round revision.
+    const isSuggestionApplied = (item) => isSuggestionEffective(item);
 
     const syncEditorConfigFromStatus = (payload = {}) => {
         const suppliedConfig = payload.editorConfig || payload.editor_config;
@@ -172,13 +361,17 @@ export function useReviewActions(state, editor, helpers) {
         if (item?._applying || isSuggestionApplied(item)) return;
         const originalText = suggestionOriginal(item);
         const suggestedText = suggestionText(item);
-        const linkedChanges = Array.isArray(item?.linked_changes)
-            ? item.linked_changes.filter((change) => change?.operation !== 'append'
-                && (change?.current_clause || change?.original_text)
-                && change?.suggested_text)
-            : [];
+        const plannedEntries = revisionPreflightEntries(item, suggestionIndex);
+        const linkedChanges = plannedEntries.filter((entry) => entry.operation === 'replace');
+        const appendEntries = plannedEntries.filter((entry) => entry.operation === 'append');
 
-        if (!suggestedText || (!originalText && !isMissingClauseSuggestion(item))) {
+        if ((linkedChanges.length && appendEntries.length) || appendEntries.length > 1) {
+            ElMessage.warning('同一风险同时包含多类写入，当前不支持拆分提交，请先合并建议。');
+            return;
+        }
+
+        if (!plannedEntries.length || plannedEntries.some((entry) => !entry.suggestedText
+            || (entry.operation === 'replace' && !entry.originalText))) {
             ElMessage.warning('该建议缺少可写入合同的建议文本，请手动修改。');
             return;
         }
@@ -193,24 +386,48 @@ export function useReviewActions(state, editor, helpers) {
             item._applying = false;
         };
 
-        if (linkedChanges.length > 1) {
+        let reviewPreflightConfirmed = false;
+        if (reviewApplyMode.value === 'review') {
+            previewSuggestion(item, '正在检查当前条款的修订状态');
+            try {
+                const [preflight] = await preflightReviewSuggestions([{ item, index: suggestionIndex }]);
+                if (!isRevisionPreflightSafe(preflight)) {
+                    const status = `${preflight.label}：${preflight.message}`;
+                    markFailed(status);
+                    ElMessage.warning(status);
+                    return;
+                }
+                reviewPreflightConfirmed = true;
+                selectedSuggestionPreview.value.status = `${preflight.label}，正在写入审阅修订`;
+            } catch (error) {
+                const message = error.response?.data?.error || error.response?.data?.message
+                    || (error.message === 'ONLYOFFICE_SAVE_NOT_CONFIRMED'
+                        ? '文档保存尚未确认，已停止修订。'
+                        : '修订预检失败，已停止写入。');
+                item._revisionPreflight = {
+                    suggestionIndex,
+                    title: suggestionTitle(item, suggestionIndex),
+                    status: PREFLIGHT_STATUS.FAILED,
+                    label: preflightStatusLabel(PREFLIGHT_STATUS.FAILED),
+                    message,
+                    results: [],
+                };
+                markFailed(message);
+                ElMessage.error(message);
+                return;
+            }
+        }
+
+        if (linkedChanges.length > 0) {
             previewSuggestion(item, '正在原子写入关联条款');
             try {
-                if (!await ensureReviewApplyMode()) throw new Error('EDITOR_REVIEW_MODE_NOT_READY');
-                const saveAck = await forceSaveCurrentDocument(true);
-                if (!saveAck?.saved) throw new Error('ONLYOFFICE_SAVE_NOT_CONFIRMED');
+                if (!reviewPreflightConfirmed) {
+                    if (!await ensureReviewApplyMode()) throw new Error('EDITOR_REVIEW_MODE_NOT_READY');
+                    const saveAck = await forceSaveCurrentDocument(true);
+                    if (!saveAck?.saved) throw new Error('ONLYOFFICE_SAVE_NOT_CONFIRMED');
+                }
                 const response = await api.batchReplaceContractText(contract.id, {
-                    suggestions: linkedChanges.map((change) => ({
-                        suggestionIndex,
-                        suggestionId: item.revision_group?.suggestion_id || item.suggestion_id || item.id || '',
-                        title: suggestionTitle(item, 0),
-                        originalText: change.current_clause || change.original_text,
-                        suggestedText: change.suggested_text,
-                        originalCandidates: buildReplacementCandidates(
-                            change.current_clause || change.original_text,
-                            change,
-                        ),
-                    })),
+                    suggestions: linkedChanges,
                     mode: reviewApplyMode.value,
                     expectedDocumentKey: contract.editorConfig?.document?.key,
                     expectedSha256: contract.confirmedOssSha256 || undefined,
@@ -223,30 +440,64 @@ export function useReviewActions(state, editor, helpers) {
                 });
                 selectedSuggestionPreview.value.status = `已原子写入 ${results.length} 处关联条款，等待统一审阅`;
                 await reloadEditorConfig(response.data.editorConfig, undefined, {
-                    text: results[0]?.replacementText || linkedChanges[0].suggested_text,
+                    text: results[0]?.replacementText || linkedChanges[0].suggestedText,
                 });
                 item._applying = false;
             } catch (error) {
-                markFailed(error.response?.data?.error || '关联条款未全部写入，文档保持原状。');
-                ElMessage.error(error.response?.data?.error || '关联条款原子修订失败，未修改合同。');
+                const details = error.response?.data?.results || error.response?.data?.failures || error.response?.data?.details || [];
+                const detailText = Array.isArray(details)
+                    ? details.map((failure, index) => `第 ${Number(failure.suggestionIndex ?? failure.suggestion_index ?? failure.index ?? index) + 1} 处：${failure.message || failure.error || failure.reason || '无法安全写入'}`).join('；')
+                    : '';
+                const message = detailText || error.response?.data?.error || '关联条款未全部写入，文档保持原状。';
+                item._revisionApplyError = message;
+                markFailed(message);
+                ElMessage.error(message);
             }
             return;
         }
 
-        if (isMissingClauseSuggestion(item)) {
+        if (appendEntries.length === 1) {
+            const appendEntry = appendEntries[0];
             previewSuggestion(item, '正在新增条款');
+            if (reviewPreflightConfirmed) {
+                try {
+                    const response = await api.appendContractClause(contract.id, {
+                        title: appendEntry.title,
+                        content: appendEntry.suggestedText,
+                        mode: 'review',
+                        suggestionIndex,
+                        suggestionId: item.revision_group?.suggestion_id || item.suggestion_id || item.id || '',
+                        anchorHint: appendEntry.anchorHint,
+                        currentClause: appendEntry.originalText,
+                        targetClauseNo: appendEntry.targetClauseNo,
+                        targetHeading: appendEntry.targetHeading,
+                        expectedDocumentKey: contract.editorConfig?.document?.key,
+                        expectedSha256: contract.confirmedOssSha256 || undefined,
+                    });
+                    await reloadEditorConfig(response.data?.editorConfig, undefined, {
+                        text: response.data?.insertedText || appendEntry.suggestedText,
+                    });
+                    markAdopted({ appended: true, ...response.data });
+                } catch (error) {
+                    const message = error.response?.data?.error || error.response?.data?.message || '新增条款失败，文档未发生变化。';
+                    item._revisionApplyError = message;
+                    ElMessage.error(message);
+                    markFailed(message);
+                }
+                return;
+            }
             await appendClauseInEditorFinal(
-                suggestionTitle(item, 0),
-                suggestedText,
+                appendEntry.title,
+                appendEntry.suggestedText,
                 markAdopted,
                 markFailed,
                 {
                     mode: reviewApplyMode.value,
                     suggestionIndex,
-                    anchorHint: item.anchor_hint || item.anchorHint || '',
-                    currentClause: originalText || '',
-                    targetClauseNo: item.target_clause_no || item.targetClauseNo || '',
-                    targetHeading: item.target_heading || item.targetHeading || item.parent_clause || item.target_section || item.section_title || '',
+                    anchorHint: appendEntry.anchorHint,
+                    currentClause: appendEntry.originalText,
+                    targetClauseNo: appendEntry.targetClauseNo,
+                    targetHeading: appendEntry.targetHeading,
                     suggestionId: item.revision_group?.suggestion_id || item.suggestion_id || item.id || '',
                 },
             );
@@ -254,6 +505,25 @@ export function useReviewActions(state, editor, helpers) {
         }
 
         previewSuggestion(item, '正在采纳');
+        if (reviewPreflightConfirmed) {
+            try {
+                const result = await replaceTextOnServer(originalText, suggestedText, item, {
+                    mode: 'review',
+                    suggestionIndex,
+                    suggestionId: item.revision_group?.suggestion_id || item.suggestion_id || item.id || '',
+                });
+                await reloadEditorConfig(result.editorConfig, undefined, {
+                    text: result.replacementText || suggestedText,
+                });
+                markAdopted(result);
+            } catch (error) {
+                const message = error.response?.data?.error || error.response?.data?.message || '替换失败，文档未发生变化。';
+                item._revisionApplyError = message;
+                ElMessage.error(message);
+                markFailed(message);
+            }
+            return;
+        }
         await replaceTextInEditorFinal(originalText, suggestedText, markAdopted, markFailed, item, {
             mode: reviewApplyMode.value,
             suggestionIndex,
@@ -272,12 +542,13 @@ export function useReviewActions(state, editor, helpers) {
         URL.revokeObjectURL(url);
     };
 
-    const applyAllSuggestions = async () => {
+    const applyAllSuggestions = async (allowedIndexes = null, { skipForceSave = false } = {}) => {
+        const allowed = Array.isArray(allowedIndexes) ? new Set(allowedIndexes.map(Number)) : null;
         const indexes = (reviewData.modification_suggestions || []).map((_, index) => index);
         const pendingItems = indexes.map((index) => ({
             index,
             item: reviewData.modification_suggestions[index],
-        })).filter(({ item }) => item && !isSuggestionApplied(item));
+        })).filter(({ item, index }) => item && !isSuggestionApplied(item) && (!allowed || allowed.has(index)));
         if (!pendingItems.length) {
             ElMessage.info('全部风险建议均已处理。');
             return;
@@ -285,81 +556,97 @@ export function useReviewActions(state, editor, helpers) {
         batchApplying.value = true;
         try {
             if (!await ensureReviewApplyMode()) return;
-            const appendItems = pendingItems.filter(({ item }) => isMissingClauseSuggestion(item));
-            const replacementItems = pendingItems.filter(({ item }) => !isMissingClauseSuggestion(item));
+            const plannedItems = pendingItems.flatMap(({ item, index }) => revisionPreflightEntries(item, index)
+                .map((entry) => ({ item, index, entry })));
+            const appendItems = plannedItems.filter(({ entry }) => entry.operation === 'append');
+            const replacementItems = plannedItems.filter(({ entry }) => entry.operation === 'replace');
             let succeededCount = 0;
             let failedCount = 0;
             let totalReplacements = 0;
             let latestEditorConfig = null;
             let latestDocumentKey = contract.editorConfig?.document?.key;
+            let latestDocumentSha256 = contract.confirmedOssSha256 || undefined;
             let restoreTarget = null;
 
             // Serialize the whole batch behind one editor save. Re-saving the
             // stale browser session after the server has already produced a new
             // DOCX version can overwrite accepted revisions.
-            if (pendingItems.length) {
+            if (pendingItems.length && !skipForceSave) {
                 const saveAck = await forceSaveCurrentDocument(true);
                 if (!saveAck?.saved) throw new Error('ONLYOFFICE_SAVE_NOT_CONFIRMED');
             }
 
             if (replacementItems.length) {
-                const suggestions = replacementItems.map(({ item, index }) => ({
-                    suggestionIndex: index,
-                    suggestionId: item.revision_group?.suggestion_id || item.suggestion_id || item.id || '',
-                    title: suggestionTitle(item, 0),
-                    originalText: suggestionOriginal(item),
-                    suggestedText: suggestionText(item),
-                    originalCandidates: buildReplacementCandidates(suggestionOriginal(item), item),
-                }));
+                const suggestions = replacementItems.map(({ entry }) => entry);
                 const response = await api.batchReplaceContractText(contract.id, {
                     suggestions,
                     mode: reviewApplyMode.value,
                     expectedDocumentKey: latestDocumentKey,
-                    expectedSha256: contract.confirmedOssSha256 || undefined,
+                    expectedSha256: latestDocumentSha256,
                 });
                 latestEditorConfig = response.data.editorConfig;
                 latestDocumentKey = response.data.editorConfig?.document?.key || latestDocumentKey;
+                latestDocumentSha256 = response.data.documentSha256 || response.data.document_sha256 || latestDocumentSha256;
                 totalReplacements += response.data.totalReplacements || 0;
-                succeededCount += response.data.succeededCount || 0;
                 failedCount += response.data.failedCount || 0;
+                const groupedResults = new Map();
                 (response.data.results || []).forEach((result) => {
                     if (result.ok) {
-                        const target = replacementItems[result.index].item;
+                        const targetEntry = replacementItems.find(({ index }) => index === Number(result.suggestionIndex ?? result.suggestion_index))
+                            || replacementItems[Number(result.index)];
+                        if (!targetEntry?.item) return;
+                        const targetResults = groupedResults.get(targetEntry.index) || [];
+                        targetResults.push(result);
+                        groupedResults.set(targetEntry.index, targetResults);
                         if (!restoreTarget) {
-                            restoreTarget = { text: result.replacementText || suggestionText(target) };
+                            restoreTarget = { text: result.replacementText || targetEntry.entry.suggestedText };
                         }
-                        applyResultToSuggestion(target, suggestionOriginal(target), suggestionText(target), {
-                            ...result,
-                            applicationStatus: response.data.applicationStatus || response.data.application_status,
-                        });
+                    } else {
+                        const targetEntry = replacementItems.find(({ index }) => index === Number(result.suggestionIndex ?? result.suggestion_index))
+                            || replacementItems[Number(result.index)];
+                        if (targetEntry?.item) {
+                            targetEntry.item._revisionApplyError = result.message || result.error || result.reason || '无法安全写入该条款。';
+                        }
                     }
                 });
+                for (const [suggestionIndex, results] of groupedResults.entries()) {
+                    const target = reviewData.modification_suggestions?.[suggestionIndex];
+                    if (!target) continue;
+                    target.revision_groups = results.map((result) => result.revisionGroup || result.revision_group).filter(Boolean);
+                    applyResultToSuggestion(target, suggestionOriginal(target), suggestionText(target), {
+                        ...(results[0] || {}),
+                        applicationStatus: response.data.applicationStatus || response.data.application_status,
+                    });
+                }
+                succeededCount += groupedResults.size;
             }
 
-            for (const { item, index } of appendItems) {
+            for (const { item, index, entry } of appendItems) {
                 try {
                     const response = await api.appendContractClause(contract.id, {
-                        title: suggestionTitle(item, 0),
-                        content: suggestionText(item),
+                        title: entry.title,
+                        content: entry.suggestedText,
                         mode: reviewApplyMode.value,
                         suggestionIndex: index,
                         suggestionId: item.revision_group?.suggestion_id || item.suggestion_id || item.id || '',
-                        anchorHint: item.anchor_hint || item.anchorHint || '',
-                        currentClause: suggestionOriginal(item) || '',
-                        targetClauseNo: item.target_clause_no || item.targetClauseNo || '',
-                        targetHeading: item.target_heading || item.targetHeading || item.parent_clause || item.target_section || item.section_title || '',
+                        anchorHint: entry.anchorHint,
+                        currentClause: entry.originalText,
+                        targetClauseNo: entry.targetClauseNo,
+                        targetHeading: entry.targetHeading,
                         expectedDocumentKey: latestDocumentKey,
-                        expectedSha256: contract.confirmedOssSha256 || undefined,
+                        expectedSha256: latestDocumentSha256,
                     });
                     latestEditorConfig = response.data.editorConfig || latestEditorConfig;
                     latestDocumentKey = response.data.editorConfig?.document?.key || latestDocumentKey;
+                    latestDocumentSha256 = response.data.documentSha256 || response.data.document_sha256 || latestDocumentSha256;
                     if (!restoreTarget) {
-                        restoreTarget = { text: response.data.insertedText || suggestionText(item) };
+                        restoreTarget = { text: response.data.insertedText || entry.suggestedText };
                     }
                     applyResultToSuggestion(item, suggestionOriginal(item), suggestionText(item), response.data);
                     succeededCount += 1;
-                } catch {
+                } catch (error) {
                     failedCount += 1;
+                    item._revisionApplyError = error.response?.data?.error || error.response?.data?.message || '新增条款写入失败。';
                 }
             }
 
@@ -372,7 +659,23 @@ export function useReviewActions(state, editor, helpers) {
                 await reloadEditorConfig(latestEditorConfig, undefined, restoreTarget);
             }
         } catch (error) {
-            ElMessage.error(error.response?.data?.error || '批量采纳失败。');
+            const failures = error.response?.data?.results || error.response?.data?.failures || error.response?.data?.details || [];
+            const detailLines = Array.isArray(failures) ? failures.map((failure, resultIndex) => {
+                const suggestionIndex = Number(failure.suggestionIndex ?? failure.suggestion_index ?? failure.index ?? resultIndex);
+                const target = reviewData.modification_suggestions?.[suggestionIndex];
+                const message = failure.message || failure.error || failure.reason || '无法安全写入';
+                if (target) target._revisionApplyError = message;
+                return `第 ${suggestionIndex + 1} 项：${message}`;
+            }) : [];
+            const message = detailLines.length
+                ? detailLines.join('；')
+                : (error.response?.data?.error || error.response?.data?.message || '批量采纳失败。');
+            selectedSuggestionPreview.value = {
+                before: '一键处理全部未处理风险建议',
+                after: message,
+                status: '批量修订未写入，请按下方逐项结果处理',
+            };
+            ElMessage.error(message);
         } finally {
             batchApplying.value = false;
         }
@@ -438,9 +741,10 @@ export function useReviewActions(state, editor, helpers) {
     };
 
     return {
-        batchApplying, diffItems, diffLoading, exportingDocument,
+        batchApplying, batchPreflightLoading, batchPreflightResults, diffItems, diffLoading, exportingDocument,
         addDocComment, adoptSuggestion, isSuggestionApplied, isSuggestionPendingReview, isSuggestionEffective,
         normalizeSuggestionApplicationStatus, suggestionApplicationStatus,
+        preflightStatusLabel, isRevisionPreflightSafe, preflightAllSuggestions,
         applySuggestionStatusPayload, setSuggestionReviewDecision, downloadBlob,
         applyAllSuggestions, loadLatestDiff, exportReport, downloadPdfAnnotations, exportContractDocument,
     };

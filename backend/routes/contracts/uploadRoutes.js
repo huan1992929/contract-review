@@ -34,6 +34,7 @@ const { getIoInstance } = require('../../services/contractAnalysis/analysisJob')
 const { diffClauses } = require('../../services/incrementalReview');
 const { syncRevisionGroupsFromDocx } = require('../../services/contractAnalysis/docxEdit');
 const { mirrorContractFile } = require('../../services/thinkparkStorageGateway');
+const { acquireContractWriteLock } = require('../../services/contractAnalysis/contractWriteLock');
 
 const ALLOWED_EXTENSIONS = ['.docx', '.pdf'];
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -127,6 +128,11 @@ module.exports = function (router) {
             console.warn('[OnlyOffice] rejected unsigned or invalid save callback:', error.message);
             return res.status(200).json({ error: 1 });
         }
+        let releaseWriteLock = null;
+        let callbackOriginalContents = null;
+        let callbackStoragePath = '';
+        let callbackFileReplaced = false;
+        let callbackCommitComplete = false;
         try {
             const body = req.body;
             console.log('[OnlyOffice] save callback:', {
@@ -136,7 +142,7 @@ module.exports = function (router) {
                 forcesavetype: body.forcesavetype,
             });
             if (body.status === 2 || body.status === 6) {
-                const contract = await db('contracts').where({ document_key: body.key }).first();
+                let contract = await db('contracts').where({ document_key: body.key }).first();
                 if (contract && body.url) {
                     const downloadUrl = normalizeOnlyOfficeDownloadUrl(body.url);
                     const response = await axios.get(downloadUrl, { responseType: 'stream', timeout: 30000 });
@@ -148,6 +154,7 @@ module.exports = function (router) {
                             writer.on('finish', resolve);
                             writer.on('error', reject);
                         });
+                        releaseWriteLock = await acquireContractWriteLock(contract.id);
                         // The AI mutation path rotates document_key. A delayed
                         // callback from the retired editor must never overwrite
                         // the newly generated immutable working version.
@@ -159,7 +166,11 @@ module.exports = function (router) {
                             console.warn(`[OnlyOffice] ignored stale callback for contract ${contract.id}, key ${body.key}`);
                             return res.status(200).json({ error: 0 });
                         }
+                        contract = stillCurrent;
+                        callbackStoragePath = contract.storage_path;
+                        callbackOriginalContents = fs.readFileSync(contract.storage_path);
                         fs.renameSync(callbackTempPath, contract.storage_path);
+                        callbackFileReplaced = true;
                     } finally {
                         if (fs.existsSync(callbackTempPath)) fs.unlinkSync(callbackTempPath);
                     }
@@ -196,7 +207,11 @@ module.exports = function (router) {
                     contractUpdate.oss_sha256 = mirrored.sha256;
                     if (revisionSync.changed) contractUpdate.analysis_result = JSON.stringify(revisionSync.analysis);
                     if (requiresReload) contractUpdate.document_key = nextDocumentKey;
-                    await db('contracts').where({ id: contract.id }).update(contractUpdate);
+                    const affected = await db('contracts')
+                        .where({ id: contract.id, document_key: body.key })
+                        .update(contractUpdate);
+                    if (affected !== 1) throw new Error('DOCUMENT_VERSION_STALE');
+                    callbackCommitComplete = true;
                     console.log(`[OnlyOffice] saved file for contract ${contract.id} from status ${body.status}`);
 
                     if (revisionSync.changed) {
@@ -257,8 +272,19 @@ module.exports = function (router) {
             }
             res.status(200).json({ error: 0 });
         } catch (error) {
+            if (callbackFileReplaced && !callbackCommitComplete && callbackOriginalContents && callbackStoragePath) {
+                const restorePath = `${callbackStoragePath}.callback-restore-${uuidv4()}.tmp`;
+                try {
+                    fs.writeFileSync(restorePath, callbackOriginalContents);
+                    fs.renameSync(restorePath, callbackStoragePath);
+                } finally {
+                    if (fs.existsSync(restorePath)) fs.unlinkSync(restorePath);
+                }
+            }
             console.error('[ERROR] Save callback failed:', error);
             res.status(200).json({ error: 1 });
+        } finally {
+            await releaseWriteLock?.();
         }
     });
 };

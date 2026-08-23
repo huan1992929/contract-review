@@ -47,6 +47,15 @@ test('ONLYOFFICE save callbacks require a valid document-server JWT', () => {
     assert.throws(() => verifyOnlyOfficeCallback('Bearer invalid-token'));
 });
 
+test('ONLYOFFICE callback and AI edits share the contract lock and commit with document-key CAS', () => {
+    const uploadRoutes = fs.readFileSync(path.join(__dirname, '../routes/contracts/uploadRoutes.js'), 'utf8');
+    const textEditRoutes = fs.readFileSync(path.join(__dirname, '../routes/contracts/textEditRoutes.js'), 'utf8');
+    assert.match(uploadRoutes, /acquireContractWriteLock\(contract\.id\)/);
+    assert.match(uploadRoutes, /where\(\{ id: contract\.id, document_key: body\.key \}\)/);
+    assert.match(textEditRoutes, /contract = await findOwnedContract\(req\.params\.id, userId\)/);
+    assert.match(textEditRoutes, /where\(\{ id: contract\.id, document_key: contract\.document_key \}\)/);
+});
+
 test('ONLYOFFICE review mode tracks changes without opening the review navigator', () => {
     const contract = {
         document_key: 'doc-key',

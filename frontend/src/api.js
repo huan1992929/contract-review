@@ -79,6 +79,10 @@ export default {
         return apiClient.post(`/contracts/${contractId}/batch-replace-text`, payload);
     },
 
+    preflightContractRevisions(contractId, payload) {
+        return apiClient.post(`/contracts/${contractId}/revisions/preflight`, payload);
+    },
+
     appendContractClause(contractId, payload) {
         return apiClient.post(`/contracts/${contractId}/append-clause`, payload);
     },

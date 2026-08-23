@@ -134,6 +134,18 @@
             <p class="mt-1 whitespace-pre-line leading-5 text-green-800">{{ suggestionText(item) || '暂无可展示建议' }}</p>
           </div>
         </div>
+        <div
+          v-if="item._revisionPreflight"
+          :class="['revision-preflight', `is-${item._revisionPreflight.status}`]"
+          role="status"
+        >
+          <strong>{{ item._revisionPreflight.label }}</strong>
+          <span>{{ item._revisionPreflight.message }}</span>
+        </div>
+        <div v-if="item._revisionApplyError" class="revision-apply-error" role="alert">
+          <strong>本次未写入</strong>
+          <span>{{ item._revisionApplyError }}</span>
+        </div>
         <!-- 4.1 谈判推演面板 -->
         <div v-if="item._showNegotiation && item._negotiation" class="mt-3 p-3 bg-purple-50 border border-purple-200 rounded-md space-y-3">
           <div class="flex items-center gap-2 text-xs text-purple-800 font-semibold">
@@ -175,18 +187,30 @@
     </div>
     <div v-else class="text-center text-text-light py-8">未发现修改建议</div>
 
-    <el-dialog v-model="batchPreflightVisible" width="520px" class="batch-preflight-dialog" :close-on-click-modal="!batchApplying">
+    <el-dialog v-model="batchPreflightVisible" width="620px" class="batch-preflight-dialog" :close-on-click-modal="!batchApplying && !batchPreflightLoading">
       <template #header>
         <div class="preflight-heading">
           <span class="preflight-kicker">批量修订预检</span>
           <h3>确认本次写入范围</h3>
         </div>
       </template>
-      <p class="preflight-intro">系统只会提交定位明确的建议。无法安全定位的内容将保留在报告中，不会猜测修改合同。</p>
+      <p class="preflight-intro">已先确认 OnlyOffice 保存，再逐条检查当前 DOCX。只有“可安全新增”和“可更新本轮建议”会进入写入。</p>
       <div class="preflight-grid">
-        <article class="preflight-stat is-safe"><strong>{{ batchPreflight.safe }}</strong><span>可安全修订</span></article>
-        <article class="preflight-stat is-comment"><strong>{{ batchPreflight.commentOnly }}</strong><span>建议人工确认</span></article>
-        <article class="preflight-stat is-ambiguous"><strong>{{ batchPreflight.ambiguous }}</strong><span>定位不明确</span></article>
+        <article class="preflight-stat is-safe"><strong>{{ batchPreflight.safeNew }}</strong><span>可安全新增</span></article>
+        <article class="preflight-stat is-supersede"><strong>{{ batchPreflight.safeSupersede }}</strong><span>更新本轮建议</span></article>
+        <article class="preflight-stat is-round"><strong>{{ batchPreflight.needsNewRound }}</strong><span>需建立下一轮</span></article>
+        <article class="preflight-stat is-conflict"><strong>{{ batchPreflight.humanConflict }}</strong><span>人工/对方修订冲突</span></article>
+        <article class="preflight-stat is-unsupported"><strong>{{ batchPreflight.unsupported }}</strong><span>不支持自动修订</span></article>
+      </div>
+      <div v-if="batchPreflightLoading" class="preflight-loading">正在读取最新 DOCX 并检查每一条建议…</div>
+      <div v-else class="preflight-results" aria-label="逐项修订预检结果">
+        <article v-for="result in batchPreflightResults" :key="`preflight-${result.suggestionIndex}`" :class="['preflight-result', `is-${result.status}`]">
+          <span class="preflight-result__number">{{ result.suggestionIndex + 1 }}</span>
+          <div>
+            <strong>{{ result.title }}</strong>
+            <p><b>{{ result.label }}</b>：{{ result.message }}</p>
+          </div>
+        </article>
       </div>
       <div class="preflight-rule">
         <span></span>
@@ -194,7 +218,7 @@
       </div>
       <template #footer>
         <button class="preflight-secondary" :disabled="batchApplying" @click="batchPreflightVisible = false">返回检查</button>
-        <button class="preflight-primary" :disabled="batchApplying || batchPreflight.safe === 0" @click="confirmBatchApply">
+        <button class="preflight-primary" :disabled="batchApplying || batchPreflightLoading || batchPreflight.safe === 0" @click="confirmBatchApply">
           {{ batchApplying ? '正在生成审阅版本…' : `确认修订 ${batchPreflight.safe} 项` }}
         </button>
       </template>
@@ -213,10 +237,11 @@ export default {
     const review = inject('review');
     const {
       reviewData, showPlainLanguage, reviewApplyMode, isPdfContract,
-      batchApplying,
+      batchApplying, batchPreflightLoading, batchPreflightResults,
       suggestionTitle, suggestionOriginal, suggestionText, suggestionReason, suggestionCitations, isMissingClauseSuggestion,
       locateText, addDocComment, previewSuggestion, adoptSuggestion,
-      applyAllSuggestions, isSuggestionApplied, suggestionApplicationStatus, toggleNegotiation, adoptFallbackOption,
+      applyAllSuggestions, preflightAllSuggestions, isRevisionPreflightSafe,
+      isSuggestionApplied, suggestionApplicationStatus, toggleNegotiation, adoptFallbackOption,
       normalizeSeverity,
     } = review;
 
@@ -226,48 +251,35 @@ export default {
       : []);
     const expandedSuggestionIndexes = ref([]);
     const batchPreflightVisible = ref(false);
-    const isBatchEligible = (item) => suggestionApplicationStatus(item) === 'unresolved';
+    const isBatchEligible = (item) => !isSuggestionApplied(item);
     const hasUnresolvedSuggestions = computed(() => suggestions.value.some(isBatchEligible));
     const isSuggestionResolved = (item) => ['accepted', 'applied'].includes(suggestionApplicationStatus(item));
-    const batchCandidateKind = (item) => {
-      const original = suggestionOriginal(item).trim();
-      const suggested = suggestionText(item).trim();
-      if (suggested && original.length >= 8 && !isMissingClauseSuggestion(item)) return 'safe';
-      if (suggested && (isMissingClauseSuggestion(item) || original)) return 'commentOnly';
-      return 'ambiguous';
-    };
-    const batchPreflight = computed(() => suggestions.value.reduce((result, item) => {
-      if (!isBatchEligible(item)) return result;
-      result[batchCandidateKind(item)] += 1;
+    const batchPreflight = computed(() => batchPreflightResults.value.reduce((result, item) => {
+      if (item.status === 'safe_new') result.safeNew += 1;
+      else if (item.status === 'safe_supersede') result.safeSupersede += 1;
+      else if (item.status === 'needs_new_round') result.needsNewRound += 1;
+      else if (item.status === 'human_conflict') result.humanConflict += 1;
+      else result.unsupported += 1;
+      result.safe = result.safeNew + result.safeSupersede;
       return result;
-    }, { safe: 0, commentOnly: 0, ambiguous: 0 }));
-    const openBatchPreflight = () => { batchPreflightVisible.value = true; };
+    }, {
+      safe: 0,
+      safeNew: 0,
+      safeSupersede: 0,
+      needsNewRound: 0,
+      humanConflict: 0,
+      unsupported: 0,
+    }));
+    const openBatchPreflight = async () => {
+      batchPreflightVisible.value = true;
+      await preflightAllSuggestions();
+    };
     const confirmBatchApply = async () => {
-      // The legacy batch action selects every locally unresolved item. Shield
-      // preflight-blocked suggestions so only the explicitly counted safe set
-      // can enter the batch request; restore their real states immediately.
-      const shielded = suggestions.value
-        .filter((item) => !isBatchEligible(item) || batchCandidateKind(item) !== 'safe')
-        .map((item) => ({
-          item,
-          applicationStatus: item.application_status,
-          reviewPending: item.review_pending,
-        }));
-      shielded.forEach(({ item }) => {
-        item.application_status = 'pending_review';
-        item.review_pending = true;
-      });
-      try {
-        await applyAllSuggestions();
-        batchPreflightVisible.value = false;
-      } finally {
-        shielded.forEach(({ item, applicationStatus, reviewPending }) => {
-          if (applicationStatus === undefined) delete item.application_status;
-          else item.application_status = applicationStatus;
-          if (reviewPending === undefined) delete item.review_pending;
-          else item.review_pending = reviewPending;
-        });
-      }
+      const safeIndexes = batchPreflightResults.value
+        .filter(isRevisionPreflightSafe)
+        .map((result) => result.suggestionIndex);
+      await applyAllSuggestions(safeIndexes, { skipForceSave: reviewApplyMode.value === 'review' });
+      batchPreflightVisible.value = false;
     };
     const suggestionCardStateClass = (item) => {
       const status = suggestionApplicationStatus(item);
@@ -305,7 +317,7 @@ export default {
     const suggestionActionLabel = (item) => {
       if (item?._applying) return '处理中...';
       const status = suggestionApplicationStatus(item);
-      if (status === 'pending_review') return '等待审阅决定';
+      if (status === 'pending_review') return '更新本轮建议';
       if (['accepted', 'applied'].includes(status)) return '已解决';
       const retryPrefix = status === 'rejected' ? '重新提出' : '';
       if (isMissingClauseSuggestion(item)) {
@@ -360,7 +372,8 @@ export default {
     );
     return {
       reviewData, suggestions, showPlainLanguage, reviewApplyMode, isPdfContract,
-      batchApplying, hasUnresolvedSuggestions,
+      batchApplying, batchPreflightLoading, hasUnresolvedSuggestions,
+      batchPreflightResults,
       batchPreflightVisible, batchPreflight, openBatchPreflight, confirmBatchApply,
       suggestionTitle, suggestionOriginal, suggestionText, suggestionReason, suggestionCitations, isMissingClauseSuggestion,
       locateText, addDocComment, previewSuggestion, adoptSuggestion,
@@ -558,13 +571,28 @@ export default {
 .preflight-heading h3 { margin: 0; color: var(--tp-text-primary); font-size: 20px; }
 .preflight-kicker { color: var(--tp-accent); font-size: 10px; font-weight: 800; letter-spacing: .16em; }
 .preflight-intro { margin: 0; color: var(--tp-text-muted); font-size: 13px; line-height: 1.7; }
-.preflight-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
+.preflight-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 18px; }
 .preflight-stat { display: grid; gap: 5px; padding: 15px; border: 1px solid var(--tp-line); border-radius: 12px; background: var(--tp-bg-muted); }
 .preflight-stat strong { font-size: 25px; line-height: 1; }
 .preflight-stat span { color: var(--tp-text-muted); font-size: 11px; }
 .preflight-stat.is-safe strong { color: var(--tp-success); }
-.preflight-stat.is-comment strong { color: var(--tp-warning); }
-.preflight-stat.is-ambiguous strong { color: var(--tp-accent); }
+.preflight-stat.is-supersede strong { color: #0f766e; }
+.preflight-stat.is-round strong { color: #8a5b00; }
+.preflight-stat.is-conflict strong,
+.preflight-stat.is-unsupported strong { color: var(--tp-accent); }
+.preflight-loading { margin-top: 14px; padding: 14px; border-radius: 10px; background: var(--tp-bg-muted); color: var(--tp-text-muted); font-size: 12px; text-align: center; }
+.preflight-results { display: grid; max-height: 280px; gap: 8px; margin-top: 14px; overflow-y: auto; }
+.preflight-result { display: flex; gap: 10px; padding: 10px; border: 1px solid var(--tp-line); border-radius: 10px; background: #fff; }
+.preflight-result__number { display: inline-flex; width: 25px; height: 25px; flex: 0 0 25px; align-items: center; justify-content: center; border-radius: 5px; background: var(--tp-bg-muted); color: var(--tp-text-primary); font-size: 11px; font-weight: 800; }
+.preflight-result strong { display: block; overflow: hidden; color: var(--tp-text-primary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.preflight-result p { margin: 3px 0 0; color: var(--tp-text-muted); font-size: 11px; line-height: 1.5; }
+.preflight-result p b { color: inherit; }
+.preflight-result.is-safe_new,
+.preflight-result.is-safe_supersede { border-color: #b9dbc9; background: #fbfdfc; }
+.preflight-result.is-needs_new_round { border-color: #e8c36b; background: #fffdf6; }
+.preflight-result.is-human_conflict,
+.preflight-result.is-unsupported,
+.preflight-result.is-preflight_failed { border-color: #efb5b5; background: #fffafa; }
 .preflight-rule { display: flex; gap: 10px; margin-top: 16px; padding: 12px; border-radius: 10px; background: var(--tp-accent-subtle); }
 .preflight-rule span { width: 6px; height: 6px; flex: 0 0 6px; margin-top: 6px; border-radius: 50%; background: var(--tp-accent); }
 .preflight-rule p { margin: 0; color: var(--tp-accent-active); font-size: 12px; line-height: 1.6; }
@@ -574,7 +602,22 @@ export default {
 .preflight-primary { margin-left: 8px; background: var(--tp-accent); color: #fff; }
 .preflight-primary:disabled { cursor: not-allowed; opacity: .45; }
 
+.revision-preflight,
+.revision-apply-error { display: grid; gap: 3px; margin-top: 10px; padding: 9px 11px; border: 1px solid var(--tp-line); border-radius: 8px; font-size: 11px; line-height: 1.5; }
+.revision-preflight strong,
+.revision-apply-error strong { font-size: 11px; }
+.revision-preflight span,
+.revision-apply-error span { color: var(--tp-text-muted); }
+.revision-preflight.is-safe_new,
+.revision-preflight.is-safe_supersede { border-color: #b9dbc9; background: #f4fbf7; color: #20764b; }
+.revision-preflight.is-needs_new_round { border-color: #e8c36b; background: #fff9e9; color: #8a5b00; }
+.revision-preflight.is-human_conflict,
+.revision-preflight.is-unsupported,
+.revision-preflight.is-preflight_failed,
+.revision-apply-error { border-color: #efb5b5; background: #fff1f1; color: #a82b2b; }
+
 @media (max-width: 900px) {
+  .preflight-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .suggestion-card__heading {
     display: block;
   }

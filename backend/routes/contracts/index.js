@@ -26,6 +26,9 @@ require('./focusedReviewRoutes')(router);
 require('./textEditRoutes')(router);
 require('./incrementalRoutes')(router);
 require('./versionRoutes')(router);
+// Round APIs are additive but remain dark until their write path shares the
+// same cross-instance lock protocol as DOCX edits. The schema can deploy first.
+if (process.env.CONTRACT_ROUNDS_ENABLED === 'true') require('./roundRoutes')(router);
 require('./exportRoutes')(router);
 require('./crudRoutes')(router); // MUST be last - contains catch-all /:id and / routes
 
