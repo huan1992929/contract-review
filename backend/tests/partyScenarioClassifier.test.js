@@ -7,7 +7,10 @@ const {
     classifyBusinessScenarios,
     analyzePartyAndScenario,
 } = require('../services/partyScenarioClassifier');
-const { scoreTemplateCandidates } = require('../services/reviewTemplates');
+const {
+    scoreTemplateCandidates,
+    rankKnowledgeTemplateDocuments,
+} = require('../services/reviewTemplates');
 const db = require('../database');
 
 test('uses the versioned 10-entity ThinkPark whitelist from the legal department requirement', () => {
@@ -108,6 +111,46 @@ test('ranks traceable template candidates using scenario and keyword reasons', (
     assert.equal(ranked[0].template_id, 'thinkpark_event_service');
     assert.ok(ranked[0].score > ranked[1].score);
     assert.ok(ranked[0].reasons.some((reason) => reason.startsWith('业务场景推荐')));
+});
+
+test('ranks a supplier venue document above a slightly closer client document', () => {
+    const ranked = rankKnowledgeTemplateDocuments([
+        {
+            title: '1-客户相关合同文件（思库是乙方）/01-思库创意服务合同模板（通用版）.docx',
+            score: 0.7041146,
+        },
+        {
+            title: '2-供应商相关合同文件（思库是甲方）/10-场地预定服务合同.docx',
+            score: 0.7039023,
+        },
+    ], {
+        ourRole: 'party_a',
+        scenarioDetection: { primary: { id: 'venue' }, secondary: [] },
+    });
+
+    assert.match(ranked[0].title, /场地预定服务合同/);
+    assert.equal(ranked[0].rank, 1);
+    assert.ok(ranked[0].ranking_reasons.some((reason) => reason.startsWith('甲方方向匹配')));
+    assert.ok(ranked[0].ranking_reasons.some((reason) => reason.startsWith('主场景匹配')));
+});
+
+test('ranks client-side knowledge documents first when ThinkPark is party B', () => {
+    const ranked = rankKnowledgeTemplateDocuments([
+        {
+            title: '2-供应商相关合同文件（思库是甲方）/服务采购合同.docx',
+            score: 0.8,
+        },
+        {
+            title: '1-客户相关合同文件（思库是乙方）/思库创意服务合同模板.docx',
+            score: 0.7,
+        },
+    ], {
+        ourRole: 'party_b',
+        scenarioDetection: { primary: { id: 'client_service' }, secondary: [] },
+    });
+
+    assert.match(ranked[0].title, /客户相关合同文件/);
+    assert.ok(ranked[0].ranking_reasons.some((reason) => reason.startsWith('乙方方向匹配')));
 });
 
 test.after(async () => {

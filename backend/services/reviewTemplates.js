@@ -302,6 +302,84 @@ const getTemplateCandidates = async (contractType = '', text = '', context = {},
     }));
 };
 
+const KNOWLEDGE_TEMPLATE_SCENE_KEYWORDS = {
+    venue: ['场地', '会场', '酒店', '宴会厅', '场馆'],
+    supplier_service: ['采购', '供应商', '委托服务', '框架', '服务协议'],
+    custom_procurement: ['设计', '制作', '搭建', '印刷', '物料'],
+    client_service: ['创意', '活动承办', '品牌', '营销', '客户'],
+    legal_consultation: ['法律', '法务', '咨询', '顾问'],
+    contract_drafting: ['起草', '模板', '协议', '合同'],
+};
+
+/**
+ * 对 WeKnora 召回文档做业务确定性重排。
+ *
+ * 向量分只负责召回，不允许微小相似度差异覆盖甲乙方方向和业务场景。
+ * 保留原始 score 便于审计，新增 ranking_score / ranking_reasons 记录重排依据。
+ */
+const rankKnowledgeTemplateDocuments = (items = [], context = {}, limit = 3) => {
+    const ourRole = context.ourRole || 'unknown';
+    const sceneIds = [
+        context.scenarioDetection?.primary?.id,
+        ...(context.scenarioDetection?.secondary || []).map((scene) => scene.id),
+    ].filter(Boolean);
+
+    return items
+        .map((item, originalIndex) => {
+            const title = String(item.title || '');
+            const reasons = [];
+            let businessScore = 0;
+
+            const isSupplierDirection = /供应商相关合同文件|思库是甲方/.test(title);
+            const isClientDirection = /客户相关合同文件|思库是乙方/.test(title);
+            if (ourRole === 'party_a') {
+                if (isSupplierDirection) {
+                    businessScore += 40;
+                    reasons.push('甲方方向匹配：供应商相关合同');
+                }
+                if (isClientDirection) {
+                    businessScore -= 20;
+                    reasons.push('甲方方向冲突：客户相关合同');
+                }
+            } else if (ourRole === 'party_b') {
+                if (isClientDirection) {
+                    businessScore += 40;
+                    reasons.push('乙方方向匹配：客户相关合同');
+                }
+                if (isSupplierDirection) {
+                    businessScore -= 20;
+                    reasons.push('乙方方向冲突：供应商相关合同');
+                }
+            }
+
+            sceneIds.forEach((sceneId, sceneIndex) => {
+                const hits = (KNOWLEDGE_TEMPLATE_SCENE_KEYWORDS[sceneId] || [])
+                    .filter((keyword) => title.includes(keyword));
+                if (!hits.length) return;
+                const weight = sceneIndex === 0 ? 30 : 12;
+                businessScore += weight;
+                reasons.push(`${sceneIndex === 0 ? '主' : '次'}场景匹配：${hits.slice(0, 3).join('、')}`);
+            });
+
+            return {
+                ...item,
+                ranking_score: Number((businessScore + Number(item.score || 0)).toFixed(6)),
+                ranking_reasons: reasons.length ? reasons : ['按知识库原始相似度排序'],
+                _original_index: originalIndex,
+            };
+        })
+        .sort((left, right) => (
+            right.ranking_score - left.ranking_score
+            || Number(right.score || 0) - Number(left.score || 0)
+            || left._original_index - right._original_index
+        ))
+        .slice(0, Math.max(1, limit))
+        .map(({ _original_index: ignored, ...item }, index) => ({
+            ...item,
+            rank: index + 1,
+        }));
+};
+
 // 模板匹配:LLM 类型识别强匹配优先 → 关键词命中数 + 语义相似度 × 5 加权
 // 混合合同(两个模板得分均 > 0.7)返回数组,审查点取并集;否则返回单模板对象(向后兼容)
 const matchTemplate = async (contractType = '', text = '') => {
@@ -376,6 +454,7 @@ module.exports = {
     getTemplateById,
     matchTemplate,
     getTemplateCandidates,
+    rankKnowledgeTemplateDocuments,
     scoreTemplateCandidates,
     seedTemplatesIfEmpty,
     generateTypicalDescription,

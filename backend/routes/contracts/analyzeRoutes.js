@@ -22,7 +22,12 @@ const { requireRequestUserId, getRequestUserId, findOwnedContract } = require('.
 const { extractTextFromFile, wrapContractContent } = require('../../services/contractAnalysis/fileExtraction');
 const { emitAnalysisProgress, createAnalysisJob, ANALYSIS_STEPS, TOTAL_EST_SECONDS, analysisJobs } = require('../../services/contractAnalysis/analysisJob');
 const { callJsonLLM } = require('../../services/contractAnalysis/llm');
-const { matchTemplate, getTemplateById, getTemplateCandidates } = require('../../services/reviewTemplates');
+const {
+    matchTemplate,
+    getTemplateById,
+    getTemplateCandidates,
+    rankKnowledgeTemplateDocuments,
+} = require('../../services/reviewTemplates');
 const { analyzePartyAndScenario } = require('../../services/partyScenarioClassifier');
 const { getRelevantKnowledge, annotateKnowledgeUpdates } = require('../../services/contractAnalysis/knowledge');
 const { parseJsonField } = require('../../services/contractAnalysis/reportRendering');
@@ -146,7 +151,7 @@ ${wrapContractContent(plainText)}
                     perspective: deterministicContext.party_identification.role_label || '',
                 }, 8);
                 const seenDocumentIds = new Set();
-                analysisResult.reference_template_documents = referenceKnowledge
+                const referenceDocuments = referenceKnowledge
                     .map((item) => ({
                         document_id: item.metadata?.document_id || item.clause || null,
                         knowledge_base_id: item.metadata?.knowledge_base_id || null,
@@ -163,8 +168,15 @@ ${wrapContractContent(plainText)}
                         if (!key || seenDocumentIds.has(key)) return false;
                         seenDocumentIds.add(key);
                         return true;
-                    })
-                    .slice(0, 3);
+                    });
+                analysisResult.reference_template_documents = rankKnowledgeTemplateDocuments(
+                    referenceDocuments,
+                    {
+                        ourRole: deterministicContext.party_identification.our_role,
+                        scenarioDetection: deterministicContext.scenario_detection,
+                    },
+                    3,
+                );
             } catch (referenceError) {
                 console.warn('[pre-analysis] Reference template lookup failed:', referenceError.message);
             }
