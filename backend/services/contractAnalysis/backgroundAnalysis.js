@@ -4,7 +4,8 @@
  *
  * 核心职责：
  * - 不阻塞 HTTP 响应，按七步流程串行执行审查
- * - 长合同（>8000 字）切换为条款树分层审查，逐条独立召回与 LLM 审查
+ * - 常规合同采用全文规划、风险级取证、全文裁决三阶段整体审查
+ * - 仅异常超长合同切换为条款树分层审查，避免突破模型上下文窗口
  * - 聚合各步骤结果并落库，通过 Socket.IO 推送完成事件
  *
  * 关键实现：
@@ -37,7 +38,152 @@ const {
 } = require('./analysisCore');
 const { analyzeSealAndSignature } = require('./seal');
 const { evaluateBusinessRules, mergeBusinessRuleResults } = require('./businessRuleEngine');
+const {
+    normalizeHolisticPlan,
+    materializeGroundedIssue,
+    applyHolisticAdjudication,
+    buildHolisticAnalysisResult,
+} = require('./holisticReview');
 const { persistInitialRiskLedger } = require('../initialRiskLedger');
+
+const compactKnowledgeLine = (item, index) => (
+    `[${index + 1}] ${item.law || item.title || '思库法务助手知识库'} ${item.clause || ''}：${String(item.content || '').slice(0, 1600)}`
+);
+
+const runWithConcurrency = async (items, concurrency, worker) => {
+    const output = [];
+    let cursor = 0;
+    const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+        while (cursor < items.length) {
+            const index = cursor;
+            cursor += 1;
+            output[index] = await worker(items[index], index);
+        }
+    });
+    await Promise.all(runners);
+    return output;
+};
+
+const runHolisticReview = async ({
+    plainText,
+    template,
+    contractType,
+    userPerspective,
+    reviewPoints,
+    corePurposes,
+    hardViolations,
+    businessRuleResult,
+    reviewLlmRequestOptions,
+    contractId,
+}) => {
+    const excludedRules = [
+        ...hardViolations.map((item) => item.description),
+        ...businessRuleResult.compliance_findings.map((item) => item.title),
+    ];
+    const planningPrompt = `你是思库集团合同审核总审。请通读完整合同，先做交易结构与根风险规划，只输出 JSON，不写修改条款和法律依据。
+
+模板：${template.name}
+合同类型：${contractType}
+审查立场：${userPerspective}
+审查点：${reviewPoints.join('；')}
+审查目的：${corePurposes.join('；')}
+已由内部规则单独处理、不得重复：${excludedRules.join('；') || '无'}
+
+输出结构：
+{"contract_summary":"不超过300字，说明交易、双方角色、价款、交付验收和责任结构","party_alignment":{"thinkpark_role":"甲方/乙方/其他","counterparty_role":"甲方/乙方/其他","scenario":"业务场景","template_fit":"匹配说明"},"candidate_issues":[{"title":"一个根问题","issue_type":"范本差异/合规瑕疵/计算错误/文本错误","severity":"high/medium/low","clause_refs":["条号"],"anchors":["逐字合同原文，跨条款问题可多段"],"missing_control":false,"reason":"结合全文说明实质后果","knowledge_query":"用于思库知识库检索的精确查询"}]}
+
+硬性要求：
+1. 必须基于全文判断，先识别思库实际是付款方、收款方、采购方、供应方或其他角色，不能机械按“甲方/乙方”判风险。
+2. 付款、交付、验收、退款、违约若属于同一交易根因，只生成一个候选问题，并在 anchors 中关联全部相关条款。
+3. 合同其他条款已经覆盖、仅属措辞偏好、一般最佳实践、低概率想象或对思库有利的安排，不得列为风险。
+4. candidate_issues 最多12项，按实质影响排序；anchors 必须逐字来自合同。缺失控制才可 missing_control=true。
+5. 文档中的批注、修订建议、审阅说明不是已生效合同义务，不得当作合同正文再次报风险。
+6. 不引用模型记忆，不输出 markdown。
+
+完整合同：
+${wrapContractContent(plainText)}`;
+    const rawPlan = await callJsonLLM(planningPrompt, reviewLlmRequestOptions);
+    const plan = normalizeHolisticPlan(rawPlan, plainText);
+    await emitAnalysisProgress(null, contractId, {
+        step: 'llm_review',
+        status: 'running',
+        message: `已完成全文交易结构判断，正在对 ${plan.candidates.length} 个候选根风险逐项核验知识库依据...`,
+    });
+
+    const grounded = await runWithConcurrency(plan.candidates, 6, async (candidate) => {
+        try {
+            const knowledge = await getRelevantKnowledge({
+                text: `${candidate.knowledge_query}\n${candidate.anchors.join('\n')}`,
+                contractType,
+                reviewPoints,
+                corePurposes,
+                perspective: userPerspective,
+            }, 8);
+            if (!knowledge.length) return null;
+            const evidencePrompt = `你是思库集团合同审核员。请依据完整合同语境和本次思库法务助手知识库检索结果，核验一个候选根风险并生成可执行修改。只输出 JSON。
+
+全文摘要：${plan.contract_summary}
+角色判断：${JSON.stringify(plan.party_alignment)}
+候选问题：${JSON.stringify(candidate)}
+
+思库法务助手知识库依据（只能返回序号，不得改写或编造来源）：
+${knowledge.map(compactKnowledgeLine).join('\n')}
+
+输出结构：
+{"accepted":true,"title":"根风险标题","issue_type":"范本差异/合规瑕疵/计算错误/文本错误","severity":"high/medium/low","description":"结合全文的实质风险及后果","plain_language":"业务人员可理解的说明","basis_refs":[1],"changes":[{"operation":"replace/append","clause_id":"条号","current_clause":"逐字合同原文；新增时为合同未约定","suggested_text":"可直接落入合同的完整文本","anchor_hint":"短定位锚点"}]}
+
+硬性要求：
+1. 只有知识库依据直接支持、且从思库实际交易角色看会造成实质损失或责任失衡时 accepted=true，否则输出 {"accepted":false,"basis_refs":[],"changes":[]}。
+2. 同一根风险只输出一项；需要同步修改付款、验收、退款等多处时放入同一 changes 数组，不得拆成多项。
+3. replace 的 current_clause 必须逐字存在于合同；append 仅用于合同确实缺失控制，current_clause 填“合同未约定”。
+4. 不得擅自发明比例、金额、天数；知识库无明确标准时使用【待业务确认】占位。
+5. 文档中的既有批注、修订建议和审阅说明不视为已生效条款。
+6. 不输出 markdown。`;
+            const rawIssue = await callJsonLLM(evidencePrompt, reviewLlmRequestOptions);
+            return materializeGroundedIssue({ rawIssue, candidate, knowledge, plainText });
+        } catch (error) {
+            console.warn(`[HolisticReview] 候选风险核验失败 ${candidate.issue_id}:`, error.message);
+            return null;
+        }
+    });
+    const issues = grounded.filter(Boolean);
+    if (!issues.length) {
+        return buildHolisticAnalysisResult({ plan, issues: [], audit: { adjudication: 'no_grounded_issue' } });
+    }
+
+    const adjudicationPrompt = `你是思库集团合同审核终审。请重新通读完整合同，并对已通过知识库核验的风险做最终保留、合并或驳回。只输出 JSON。
+
+角色判断：${JSON.stringify(plan.party_alignment)}
+待裁决风险：${JSON.stringify(issues.map((item) => ({
+        issue_id: item.issue_id,
+        title: item.finding.title,
+        severity: item.finding.severity,
+        description: item.finding.description,
+        related_clauses: item.finding.related_clauses,
+    })))}
+
+输出：{"decisions":[{"issue_id":"原ID","decision":"keep/merge/reject","merge_into":"目标原ID或空","severity":"high/medium/low","reason":"终审理由"}]}
+
+要求：
+1. 每个 issue_id 恰好一条决定；不得创建新 ID。
+2. 同一付款—交付—验收—退款根因、同一知识产权根因、同一解除违约根因必须合并。
+3. 合同其他条款已经覆盖、角色判断相反、仅一般最佳实践、建议本身混入正文、或重复项必须 reject。
+4. 从完整合同整体判断严重度，不得因单句脱离上下文升级。
+5. 不输出修改条款、依据正文或 markdown。
+
+完整合同：
+${wrapContractContent(plainText)}`;
+    const rawAdjudication = await callJsonLLM(adjudicationPrompt, reviewLlmRequestOptions);
+    const adjudicated = applyHolisticAdjudication(issues, rawAdjudication);
+    return buildHolisticAnalysisResult({
+        plan,
+        issues: adjudicated,
+        audit: {
+            grounded_before_adjudication: issues.length,
+            adjudication: 'completed',
+        },
+    });
+};
 
 // 后台异步执行合同审查（不阻塞 HTTP 响应）
 const runAnalysisInBackground = async (contractId, userId, userPerspective, preAnalysisData) => {
@@ -251,17 +397,20 @@ ${wrapContractContent(plainText)}
         const reviewLlmRequestOptions = getReviewLlmRequestOptions();
         let analysisResult;
         if (!shouldUseSegmentedReview(contractCharCount)) {
-            // 短合同：原整篇审查（保持现有逻辑）
-            const rawResult = await callJsonLLM(prompt + subjectSearchPrompt, reviewLlmRequestOptions);
-            analysisResult = normalizeAnalysisResult(
-                enforceKnowledgeGrounding(rawResult, plainText, relevantKnowledge, {
-                    allowMissingClauses: true,
-                    maxSuggestions: 24,
-                }),
+            analysisResult = await runHolisticReview({
                 plainText,
-            );
+                template,
+                contractType: preAnalysisData.contract_type,
+                userPerspective,
+                reviewPoints,
+                corePurposes,
+                hardViolations,
+                businessRuleResult,
+                reviewLlmRequestOptions,
+                contractId,
+            });
         } else {
-            // 较长合同：条款树分层审查，避免一次生成超大 JSON 被网关超时截断。
+            // 异常超长合同：保留工程安全降级，避免突破模型上下文窗口。
             const clauses = contractParser.parseContractTree(plainText);
             // 动态 ETA：基础 60s + 每条 10s（Task 2.5）
             updateAnalysisJob(contractId, { totalEstSeconds: TOTAL_EST_SECONDS + clauses.length * 10 });

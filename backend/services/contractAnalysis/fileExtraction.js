@@ -20,6 +20,7 @@ const path = require('path');
 const fs = require('fs');
 const mammoth = require('mammoth');
 const pdf = require('pdf-parse');
+const AdmZip = require('adm-zip');
 
 const OCR_SIDECAR_SUFFIX = '.ocr.txt';
 const MIN_OCR_SIDECAR_CHARS = 50;
@@ -49,10 +50,59 @@ const detectScannedPdf = (pdfData) => {
     };
 };
 
+const unwrapElements = (xml, names) => {
+    let result = xml;
+    for (const name of names) {
+        result = result
+            .replace(new RegExp(`<w:${name}\\b[^>]*>`, 'g'), '')
+            .replace(new RegExp(`<\\/w:${name}>`, 'g'), '');
+    }
+    return result;
+};
+
+const removeElements = (xml, names) => {
+    let result = xml;
+    for (const name of names) {
+        result = result
+            .replace(new RegExp(`<w:${name}\\b[^>]*/>`, 'g'), '')
+            .replace(new RegExp(`<w:${name}\\b[^>]*>[\\s\\S]*?<\\/w:${name}>`, 'g'), '');
+    }
+    return result;
+};
+
+// 审核必须基于尚未采纳修改前的权威合同，而不是把 Word 待审修订中的建议
+// 当成已生效条款。这里只在内存副本中拒绝修订，绝不改写用户 DOCX。
+const rejectTrackedChangesInXml = (xml) => {
+    let result = removeElements(xml, ['ins', 'moveTo', 'conflictIns']);
+    result = unwrapElements(result, ['del', 'moveFrom', 'conflictDel'])
+        .replace(/<w:delText\b/g, '<w:t')
+        .replace(/<\/w:delText>/g, '</w:t>');
+    result = removeElements(result, [
+        'rPrChange', 'pPrChange', 'tblPrChange', 'tblPrExChange', 'tblGridChange',
+        'trPrChange', 'tcPrChange', 'sectPrChange', 'numberingChange',
+        'customXmlInsRangeStart', 'customXmlInsRangeEnd',
+        'customXmlDelRangeStart', 'customXmlDelRangeEnd',
+        'moveFromRangeStart', 'moveFromRangeEnd', 'moveToRangeStart', 'moveToRangeEnd',
+    ]);
+    return result;
+};
+
+const extractDocxReviewBaseline = async (filePath) => {
+    const zip = new AdmZip(filePath);
+    const entry = zip.getEntry('word/document.xml');
+    if (entry) {
+        const xml = entry.getData().toString('utf8');
+        const baselineXml = rejectTrackedChangesInXml(xml);
+        if (baselineXml !== xml) zip.updateFile(entry.entryName, Buffer.from(baselineXml, 'utf8'));
+    }
+    const { value } = await mammoth.extractRawText({ buffer: zip.toBuffer() });
+    return value;
+};
+
 const extractTextFromFile = async (filePath) => {
     const ext = path.extname(filePath).toLowerCase();
     if (ext === '.docx') {
-        const { value } = await mammoth.extractRawText({ path: filePath });
+        const value = await extractDocxReviewBaseline(filePath);
         if (!value || !value.trim()) {
             const err = new Error('DOCX 文本提取为空，文件可能已损坏或为空文档。');
             err.code = 'EMPTY_TEXT';
@@ -91,6 +141,8 @@ module.exports = {
     detectScannedPdf,
     getOcrSidecarPath,
     readOcrSidecar,
+    rejectTrackedChangesInXml,
+    extractDocxReviewBaseline,
     extractTextFromFile,
     CONTRACT_CONTENT_BEGIN,
     CONTRACT_CONTENT_END,

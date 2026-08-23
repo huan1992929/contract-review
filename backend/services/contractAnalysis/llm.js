@@ -34,9 +34,14 @@ const getReviewLlmRequestOptions = (env = process.env) => ({
     maxRetries: parseNonNegativeNumber(env.REVIEW_LLM_MAX_RETRIES, 0),
 });
 
-const FULL_DOCUMENT_REVIEW_MAX_CHARS = 6000;
-const shouldUseSegmentedReview = (charCount) => (
-    Number(charCount) >= FULL_DOCUMENT_REVIEW_MAX_CHARS
+// 6000 字并不是合同语义边界。常规合同统一走全文整体审核，仅对异常超长
+// 文档保留可配置的工程安全降级，避免单次请求突破模型上下文窗口。
+const DEFAULT_HIERARCHICAL_REVIEW_MIN_CHARS = 40000;
+const getHierarchicalReviewMinChars = (env = process.env) => (
+    parseNonNegativeNumber(env.HIERARCHICAL_REVIEW_MIN_CHARS, DEFAULT_HIERARCHICAL_REVIEW_MIN_CHARS)
+);
+const shouldUseSegmentedReview = (charCount, env = process.env) => (
+    Number(charCount) >= getHierarchicalReviewMinChars(env)
 );
 
 const callJsonLLM = async (prompt, requestOptions = {}) => {
@@ -50,7 +55,8 @@ const callJsonLLM = async (prompt, requestOptions = {}) => {
 module.exports = {
     cleanJsonResponse,
     getReviewLlmRequestOptions,
-    FULL_DOCUMENT_REVIEW_MAX_CHARS,
+    DEFAULT_HIERARCHICAL_REVIEW_MIN_CHARS,
+    getHierarchicalReviewMinChars,
     shouldUseSegmentedReview,
     callJsonLLM,
 };

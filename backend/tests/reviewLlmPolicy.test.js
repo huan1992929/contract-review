@@ -33,8 +33,11 @@ test('invalid full contract review timeout policy falls back safely', () => {
     });
 });
 
-test('near-threshold contracts use segmented review before monolithic output becomes unstable', () => {
+test('ordinary contracts use holistic review and only exceptional length uses hierarchy', () => {
     assert.equal(shouldUseSegmentedReview(5999), false);
-    assert.equal(shouldUseSegmentedReview(6000), true);
-    assert.equal(shouldUseSegmentedReview(7569), true);
+    assert.equal(shouldUseSegmentedReview(6000), false);
+    assert.equal(shouldUseSegmentedReview(7569), false);
+    assert.equal(shouldUseSegmentedReview(39999), false);
+    assert.equal(shouldUseSegmentedReview(40000), true);
+    assert.equal(shouldUseSegmentedReview(8000, { HIERARCHICAL_REVIEW_MIN_CHARS: '8000' }), true);
 });
